@@ -202,7 +202,8 @@ class REST_Controller {
         
         $query['metadataPrefix'] = 'oai_dc';
         
-        if (!empty($params['set'])) {
+        // Treat null/'' as "no set filter"; everything else (including '0') must validate
+        if (isset($params['set']) && $params['set'] !== '') {
             if (!$this->data_provider->set_exists($params['set'])) {
                 $xml->add_error('badArgument', 'Invalid set specification.');
                 return false;

@@ -143,6 +143,51 @@ class Settings {
             'description' => __('IPs to skip rate limiting (one per line).', 'tainacan-oai-pmh'),
             'default' => ''
         ]);
+
+        // Trust forwarded headers (only enable if behind a real reverse proxy)
+        $tainacan_settings->create_tainacan_setting([
+            'id' => 'oai_trust_proxy_headers',
+            'title' => __('Trust Proxy Headers', 'tainacan-oai-pmh'),
+            'section' => 'tainacan_oai_pmh_settings',
+            'type' => 'boolean',
+            'input_type' => 'checkbox',
+            'label' => __('Use X-Forwarded-For for client IP (only enable behind a trusted proxy).', 'tainacan-oai-pmh'),
+            'default' => false
+        ]);
+
+        // Importer: SSL verification
+        $tainacan_settings->create_tainacan_setting([
+            'id' => 'oai_importer_sslverify',
+            'title' => __('Importer: Verify SSL', 'tainacan-oai-pmh'),
+            'section' => 'tainacan_oai_pmh_settings',
+            'type' => 'boolean',
+            'input_type' => 'checkbox',
+            'label' => __('Verify SSL certificates of remote OAI repositories (recommended).', 'tainacan-oai-pmh'),
+            'default' => true
+        ]);
+
+        // Importer: allow private IPs (development convenience)
+        $tainacan_settings->create_tainacan_setting([
+            'id' => 'oai_importer_allow_private_ips',
+            'title' => __('Importer: Allow Private IPs', 'tainacan-oai-pmh'),
+            'section' => 'tainacan_oai_pmh_settings',
+            'type' => 'boolean',
+            'input_type' => 'checkbox',
+            'label' => __('Allow imports from private/loopback addresses (use only on dev).', 'tainacan-oai-pmh'),
+            'default' => false
+        ]);
+
+        // Importer: timeout
+        $tainacan_settings->create_tainacan_setting([
+            'id' => 'oai_importer_timeout',
+            'title' => __('Importer: Request Timeout (seconds)', 'tainacan-oai-pmh'),
+            'section' => 'tainacan_oai_pmh_settings',
+            'type' => 'integer',
+            'input_type' => 'number',
+            'input_attrs' => 'min="5" max="600"',
+            'description' => __('How long to wait for a remote OAI request before failing.', 'tainacan-oai-pmh'),
+            'default' => 60
+        ]);
     }
     
     /**

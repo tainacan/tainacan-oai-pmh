@@ -43,10 +43,15 @@ class Data_Provider {
     private function get_earliest_datestamp() {
         global $wpdb;
         $earliest = $wpdb->get_var(
-            "SELECT MIN(post_date_gmt) FROM {$wpdb->posts} 
-             WHERE post_type LIKE 'tnc_col_%_item' AND post_status IN ('publish', 'private')"
+            "SELECT MIN(post_date_gmt) FROM {$wpdb->posts}
+             WHERE post_type LIKE 'tnc_col_%_item' AND post_status IN ('publish', 'private')
+                AND post_date_gmt > '1970-01-01 00:00:00'"
         );
-        return $earliest ? gmdate('Y-m-d\TH:i:s\Z', strtotime($earliest)) : '1970-01-01T00:00:00Z';
+        if ($earliest) {
+            return gmdate('Y-m-d\TH:i:s\Z', strtotime($earliest . ' UTC'));
+        }
+        // No items yet — return today (per OAI-PMH spec, earliestDatestamp must be set)
+        return gmdate('Y-m-d\TH:i:s\Z');
     }
     
     public function get_sets() {
@@ -67,6 +72,9 @@ class Data_Provider {
     }
     
     public function set_exists($set_spec) {
+        // Plugin exposes only Tainacan collections as sets (numeric IDs).
+        // Reject non-numeric set specs deliberately — yields badArgument upstream.
+        if (!ctype_digit((string) $set_spec)) return false;
         $collection = new \Tainacan\Entities\Collection((int) $set_spec);
         return $collection->get_id() > 0;
     }

@@ -172,12 +172,25 @@ class Plugin extends \Tainacan\Pages {
             'tainacan_oai_start_import',
             'tainacan_oai_process_import',
             'tainacan_oai_get_collection_metadata',
+            'tainacan_oai_build_mapping',
+            'tainacan_oai_get_import_status',
             'tainacan_oai_unblock_ip',
         ];
-        
+
         foreach ($handlers as $action) {
             $method = str_replace('tainacan_oai_', 'ajax_', $action);
             add_action('wp_ajax_' . $action, [$this, $method]);
+        }
+    }
+
+    /**
+     * Centralized authorization for every privileged AJAX endpoint.
+     * Refuses request if nonce invalid or user lacks manage_options.
+     */
+    private function authorize_ajax(): void {
+        check_ajax_referer('tainacan_oai_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => __('Permission denied.', 'tainacan-oai-pmh')], 403);
         }
     }
     
@@ -198,210 +211,195 @@ class Plugin extends \Tainacan\Pages {
     
     public function daily_maintenance() {
         $this->logger->cleanup(30);
+        $this->logger->resolve_pending_hostnames(200);
         $this->token_manager->cleanup();
         $this->rate_limiter->cleanup(7);
     }
     
-    // AJAX: Reindex all
     public function ajax_reindex() {
-        check_ajax_referer('tainacan_oai_nonce', 'nonce');
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(['message' => __('Permission denied.', 'tainacan-oai-pmh')]);
-        }
-        
+        $this->authorize_ajax();
         $count = $this->cache->rebuild_index();
         wp_send_json_success([
             'message' => sprintf(__('Indexed %d items.', 'tainacan-oai-pmh'), $count),
             'count' => $count
         ]);
     }
-    
-    // AJAX: Reindex collection
+
     public function ajax_reindex_collection() {
-        check_ajax_referer('tainacan_oai_nonce', 'nonce');
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(['message' => __('Permission denied.', 'tainacan-oai-pmh')]);
-        }
-        
+        $this->authorize_ajax();
         $collection_id = absint($_POST['collection_id'] ?? 0);
         if (!$collection_id) {
             wp_send_json_error(['message' => __('Invalid collection.', 'tainacan-oai-pmh')]);
         }
-        
         $count = $this->cache->reindex_collection($collection_id);
         wp_send_json_success([
             'message' => sprintf(__('Reindexed %d items.', 'tainacan-oai-pmh'), $count)
         ]);
     }
-    
-    // AJAX: Clear cache
+
     public function ajax_clear_cache() {
-        check_ajax_referer('tainacan_oai_nonce', 'nonce');
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(['message' => __('Permission denied.', 'tainacan-oai-pmh')]);
-        }
-        
+        $this->authorize_ajax();
         $this->cache->clear();
         wp_send_json_success(['message' => __('Cache cleared.', 'tainacan-oai-pmh')]);
     }
-    
-    // AJAX: Validate
+
     public function ajax_validate() {
-        check_ajax_referer('tainacan_oai_nonce', 'nonce');
+        $this->authorize_ajax();
         $validator = new Validator();
         wp_send_json_success($validator->run());
     }
-    
-    // AJAX: Test endpoint
+
     public function ajax_test_endpoint() {
-        check_ajax_referer('tainacan_oai_nonce', 'nonce');
-        
+        $this->authorize_ajax();
+
+        $endpoint = rest_url('tainacan-oai/v1/oai') . '?verb=Identify';
+        $sslverify = !$this->is_self_local_url($endpoint);
+
         $start = microtime(true);
-        $response = wp_remote_get(
-            rest_url('tainacan-oai/v1/oai') . '?verb=Identify',
-            ['timeout' => 30, 'sslverify' => false]
-        );
+        $response = wp_remote_get($endpoint, ['timeout' => 30, 'sslverify' => $sslverify]);
         $time = round(microtime(true) - $start, 3);
-        
+
         if (is_wp_error($response)) {
             wp_send_json_error(['message' => $response->get_error_message()]);
         }
-        
+
         $body = wp_remote_retrieve_body($response);
         if (strpos($body, 'repositoryName') === false) {
             wp_send_json_error(['message' => __('Invalid response.', 'tainacan-oai-pmh')]);
         }
-        
+
         wp_send_json_success([
             'message' => __('Endpoint working!', 'tainacan-oai-pmh'),
             'time' => $time
         ]);
     }
-    
-    // AJAX: Export logs
+
+    private function is_self_local_url(string $url): bool {
+        $host = wp_parse_url($url, PHP_URL_HOST);
+        if (!$host) return false;
+        if (in_array($host, ['localhost', '127.0.0.1', '::1'], true)) return true;
+        return $host === wp_parse_url(home_url(), PHP_URL_HOST);
+    }
+
     public function ajax_export_logs() {
-        check_ajax_referer('tainacan_oai_nonce', 'nonce');
-        if (!current_user_can('manage_options')) {
-            wp_die(__('Permission denied.', 'tainacan-oai-pmh'));
-        }
-        
+        $this->authorize_ajax();
         header('Content-Type: text/csv');
         header('Content-Disposition: attachment; filename="oai-pmh-logs-' . gmdate('Y-m-d') . '.csv"');
         echo $this->logger->export_csv();
         exit;
     }
-    
-    // AJAX: Fetch repository info
+
     public function ajax_fetch_repository() {
-        check_ajax_referer('tainacan_oai_nonce', 'nonce');
-        
-        $url = esc_url_raw($_POST['url'] ?? '');
+        $this->authorize_ajax();
+        $url = esc_url_raw(wp_unslash($_POST['url'] ?? ''));
         if (empty($url)) {
             wp_send_json_error(['message' => __('URL is required.', 'tainacan-oai-pmh')]);
         }
-        
         $info = $this->importer->fetch_repository_info($url);
-        if (is_wp_error($info)) {
-            wp_send_json_error(['message' => $info->get_error_message()]);
-        }
-        
+        if (is_wp_error($info)) wp_send_json_error(['message' => $info->get_error_message()]);
         wp_send_json_success($info);
     }
-    
-    // AJAX: Fetch sets
+
     public function ajax_fetch_sets() {
-        check_ajax_referer('tainacan_oai_nonce', 'nonce');
-        
-        $url = esc_url_raw($_POST['url'] ?? '');
+        $this->authorize_ajax();
+        $url = esc_url_raw(wp_unslash($_POST['url'] ?? ''));
         $sets = $this->importer->fetch_sets($url);
-        
-        if (is_wp_error($sets)) {
-            wp_send_json_error(['message' => $sets->get_error_message()]);
-        }
-        
+        if (is_wp_error($sets)) wp_send_json_error(['message' => $sets->get_error_message()]);
         wp_send_json_success($sets);
     }
-    
-    // AJAX: Preview records
+
     public function ajax_preview_records() {
-        check_ajax_referer('tainacan_oai_nonce', 'nonce');
-        
-        $url = esc_url_raw($_POST['url'] ?? '');
-        $set = sanitize_text_field($_POST['set'] ?? '');
-        
+        $this->authorize_ajax();
+        $url = esc_url_raw(wp_unslash($_POST['url'] ?? ''));
+        $set = sanitize_text_field(wp_unslash($_POST['set'] ?? ''));
         $records = $this->importer->preview_records($url, $set, 5);
-        if (is_wp_error($records)) {
-            wp_send_json_error(['message' => $records->get_error_message()]);
-        }
-        
+        if (is_wp_error($records)) wp_send_json_error(['message' => $records->get_error_message()]);
         wp_send_json_success($records);
     }
-    
-    // AJAX: Start import
+
     public function ajax_start_import() {
-        check_ajax_referer('tainacan_oai_nonce', 'nonce');
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(['message' => __('Permission denied.', 'tainacan-oai-pmh')]);
-        }
-        
+        $this->authorize_ajax();
+        $mapping_raw = isset($_POST['metadata_mapping'])
+            ? wp_unslash($_POST['metadata_mapping'])
+            : '';
+        $mapping = $mapping_raw !== '' ? json_decode($mapping_raw, true) : [];
+        if (!is_array($mapping)) $mapping = [];
+
         $args = [
-            'source_url' => esc_url_raw($_POST['source_url'] ?? ''),
+            'source_url' => esc_url_raw(wp_unslash($_POST['source_url'] ?? '')),
             'collection_id' => absint($_POST['collection_id'] ?? 0),
-            'set_spec' => sanitize_text_field($_POST['set_spec'] ?? ''),
-            'from_date' => sanitize_text_field($_POST['from_date'] ?? ''),
-            'until_date' => sanitize_text_field($_POST['until_date'] ?? ''),
-            'metadata_mapping' => isset($_POST['metadata_mapping']) 
-                ? json_decode(stripslashes($_POST['metadata_mapping']), true) 
-                : [],
+            'set_spec' => sanitize_text_field(wp_unslash($_POST['set_spec'] ?? '')),
+            'from_date' => sanitize_text_field(wp_unslash($_POST['from_date'] ?? '')),
+            'until_date' => sanitize_text_field(wp_unslash($_POST['until_date'] ?? '')),
+            'metadata_mapping' => $mapping,
         ];
-        
+
         $import_id = $this->importer->create_import($args);
-        if (is_wp_error($import_id)) {
-            wp_send_json_error(['message' => $import_id->get_error_message()]);
-        }
-        
+        if (is_wp_error($import_id)) wp_send_json_error(['message' => $import_id->get_error_message()]);
         wp_send_json_success(['import_id' => $import_id]);
     }
-    
-    // AJAX: Process import batch
+
     public function ajax_process_import() {
-        check_ajax_referer('tainacan_oai_nonce', 'nonce');
-        
+        $this->authorize_ajax();
         $import_id = absint($_POST['import_id'] ?? 0);
         $result = $this->importer->process_batch($import_id, 10);
-        
-        if (is_wp_error($result)) {
-            wp_send_json_error(['message' => $result->get_error_message()]);
-        }
-        
+        if (is_wp_error($result)) wp_send_json_error(['message' => $result->get_error_message()]);
         wp_send_json_success($result);
     }
-    
-    // AJAX: Get collection metadata
+
     public function ajax_get_collection_metadata() {
-        check_ajax_referer('tainacan_oai_nonce', 'nonce');
-        
+        $this->authorize_ajax();
         $collection_id = absint($_POST['collection_id'] ?? 0);
         if (!$collection_id) {
             wp_send_json_error(['message' => __('Collection ID required.', 'tainacan-oai-pmh')]);
         }
-        
         $metadata = Metadata_Mapper::get_collection_metadata($collection_id);
         wp_send_json_success($metadata);
     }
-    
-    // AJAX: Unblock IP
+
+    /**
+     * Returns the full mapping table the importer wizard should render:
+     * all 15 standard DC rows + extra fields seen in the source preview,
+     * each with sample value, multi-value flag, and an auto-suggested target.
+     */
+    public function ajax_build_mapping() {
+        $this->authorize_ajax();
+        $collection_id = absint($_POST['collection_id'] ?? 0);
+        if (!$collection_id) {
+            wp_send_json_error(['message' => __('Collection ID required.', 'tainacan-oai-pmh')]);
+        }
+        $source_raw = isset($_POST['source_fields']) ? wp_unslash($_POST['source_fields']) : '';
+        $source_fields = $source_raw !== '' ? json_decode($source_raw, true) : [];
+        if (!is_array($source_fields)) $source_fields = [];
+
+        wp_send_json_success(Metadata_Mapper::build_mapping_rows($collection_id, $source_fields));
+    }
+
+    /**
+     * Lets the UI poll an in-flight import for progress + recent errors,
+     * so users can see what failed without scraping the database.
+     */
+    public function ajax_get_import_status() {
+        $this->authorize_ajax();
+        $import_id = absint($_POST['import_id'] ?? 0);
+        $import = $this->importer->get_import($import_id);
+        if (!$import) wp_send_json_error(['message' => __('Import not found.', 'tainacan-oai-pmh')]);
+
+        wp_send_json_success([
+            'status' => $import->status,
+            'imported' => (int) $import->imported_records,
+            'failed' => (int) $import->failed_records,
+            'total' => (int) $import->total_records,
+            'error_log' => $import->error_log ? array_slice(array_filter(explode("\n", $import->error_log)), -20) : [],
+        ]);
+    }
+
     public function ajax_unblock_ip() {
-        check_ajax_referer('tainacan_oai_nonce', 'nonce');
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(['message' => __('Permission denied.', 'tainacan-oai-pmh')]);
+        $this->authorize_ajax();
+        $ip = sanitize_text_field(wp_unslash($_POST['ip'] ?? ''));
+        if (empty($ip) || !filter_var($ip, FILTER_VALIDATE_IP)) {
+            wp_send_json_error(['message' => __('Invalid IP.', 'tainacan-oai-pmh')]);
         }
-        
-        $ip = sanitize_text_field($_POST['ip'] ?? '');
-        if (empty($ip)) {
-            wp_send_json_error(['message' => __('IP required.', 'tainacan-oai-pmh')]);
-        }
-        
         $this->rate_limiter->unblock($ip);
         wp_send_json_success(['message' => __('IP unblocked.', 'tainacan-oai-pmh')]);
     }

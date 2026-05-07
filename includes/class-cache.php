@@ -130,7 +130,7 @@ class Cache {
             'metadata_json' => json_encode($dc_data),
             'status' => $item->get_status(),
             'checksum' => $checksum,
-            'last_indexed' => current_time('mysql'),
+            'last_indexed' => gmdate('Y-m-d H:i:s'),
         ];
         
         if ($existing) {
@@ -270,44 +270,54 @@ class Cache {
     
     public function get_collection_stats() {
         global $wpdb;
-        
+
         $results = $wpdb->get_results(
-            "SELECT collection_id, COUNT(*) as count 
-             FROM {$this->table} 
-             WHERE status = 'publish' 
+            "SELECT collection_id, COUNT(*) as count
+             FROM {$this->table}
+             WHERE status = 'publish'
              GROUP BY collection_id"
         );
-        
+        if (empty($results)) return [];
+
+        // Batch-load collection names: one IN query instead of N Collection() lookups
+        $ids = array_map(fn($r) => (int) $r->collection_id, $results);
+        $placeholders = implode(',', array_fill(0, count($ids), '%d'));
+        $names = $wpdb->get_results($wpdb->prepare(
+            "SELECT ID, post_title FROM {$wpdb->posts}
+             WHERE ID IN ($placeholders) AND post_type = 'tainacan-collection'",
+            $ids
+        ), OBJECT_K);
+
         $stats = [];
         foreach ($results as $row) {
-            $collection = new \Tainacan\Entities\Collection($row->collection_id);
-            if ($collection->get_id()) {
-                $stats[] = [
-                    'id' => $row->collection_id,
-                    'name' => $collection->get_name(),
-                    'count' => (int) $row->count,
-                ];
-            }
+            $cid = (int) $row->collection_id;
+            if (!isset($names[$cid])) continue;
+            $stats[] = [
+                'id' => $cid,
+                'name' => $names[$cid]->post_title,
+                'count' => (int) $row->count,
+            ];
         }
-        
         return $stats;
     }
     
     public function get_health() {
         global $wpdb;
-        
-        $repo = \Tainacan\Repositories\Items::get_instance();
-        $wp_items = $repo->fetch(['posts_per_page' => -1, 'post_status' => ['publish', 'private']], [], 'OBJECT');
-        $wp_count = is_array($wp_items) ? count($wp_items) : 0;
-        
+
+        // Count Tainacan items via direct SQL — repo->fetch with -1 loads everything into RAM
+        $wp_count = (int) $wpdb->get_var(
+            "SELECT COUNT(*) FROM {$wpdb->posts}
+             WHERE post_type LIKE 'tnc_col_%_item' AND post_status IN ('publish', 'private')"
+        );
+
         $cache_count = $this->count_items(['status' => ['publish', 'private']]);
         $sync_pct = $wp_count > 0 ? round(($cache_count / $wp_count) * 100, 1) : 100;
-        
+
         $outdated = (int) $wpdb->get_var($wpdb->prepare(
             "SELECT COUNT(*) FROM {$this->table} WHERE last_indexed < %s",
-            gmdate('Y-m-d H:i:s', strtotime('-1 day'))
+            gmdate('Y-m-d H:i:s', time() - 86400)
         ));
-        
+
         return [
             'wp_items' => $wp_count,
             'cached_items' => $cache_count,

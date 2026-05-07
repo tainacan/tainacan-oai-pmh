@@ -172,7 +172,7 @@ class Validator {
         $test = ['name' => 'XML Validity', 'description' => __('Checks XML well-formedness.', 'tainacan-oai-pmh'), 'status' => 'passed', 'details' => []];
         
         libxml_use_internal_errors(true);
-        $xml = simplexml_load_string($response['body']);
+        $xml = simplexml_load_string($response['body'], 'SimpleXMLElement', LIBXML_NONET | LIBXML_NOCDATA);
         if ($xml === false) {
             $test['status'] = 'failed';
             $test['details'][] = '✗ Invalid XML';
@@ -186,12 +186,22 @@ class Validator {
     
     private function request($params) {
         $url = add_query_arg($params, $this->base_url);
-        $response = wp_remote_get($url, ['timeout' => 30, 'sslverify' => false]);
-        
+        // Validator hits our own REST endpoint — sslverify can be disabled only for local dev
+        $sslverify = !$this->is_local_url($url);
+        $response = wp_remote_get($url, ['timeout' => 30, 'sslverify' => $sslverify]);
+
         if (is_wp_error($response)) {
             return ['error' => $response->get_error_message(), 'body' => ''];
         }
         return ['error' => null, 'body' => wp_remote_retrieve_body($response)];
+    }
+
+    private function is_local_url(string $url): bool {
+        $host = wp_parse_url($url, PHP_URL_HOST);
+        if (!$host) return false;
+        if (in_array($host, ['localhost', '127.0.0.1', '::1'], true)) return true;
+        $site_host = wp_parse_url(home_url(), PHP_URL_HOST);
+        return $site_host === $host;
     }
     
     public function get_last_result() {
