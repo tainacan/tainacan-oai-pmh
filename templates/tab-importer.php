@@ -122,20 +122,57 @@ $imports = $data['imports'];
     </div>
     <div class="oai-card-body">
         <table class="oai-table">
-            <thead><tr><th><?php esc_html_e('Source', 'tainacan-oai-pmh'); ?></th><th><?php esc_html_e('Collection', 'tainacan-oai-pmh'); ?></th><th><?php esc_html_e('Status', 'tainacan-oai-pmh'); ?></th><th><?php esc_html_e('Imported', 'tainacan-oai-pmh'); ?></th><th><?php esc_html_e('Date', 'tainacan-oai-pmh'); ?></th></tr></thead>
+            <thead><tr>
+                <th><?php esc_html_e('Source', 'tainacan-oai-pmh'); ?></th>
+                <th><?php esc_html_e('Collection', 'tainacan-oai-pmh'); ?></th>
+                <th><?php esc_html_e('Status', 'tainacan-oai-pmh'); ?></th>
+                <th><?php esc_html_e('Imported', 'tainacan-oai-pmh'); ?></th>
+                <th><?php esc_html_e('Failed', 'tainacan-oai-pmh'); ?></th>
+                <th><?php esc_html_e('Date', 'tainacan-oai-pmh'); ?></th>
+            </tr></thead>
             <tbody>
-                <?php foreach ($imports as $import): 
-                    $col = new \Tainacan\Entities\Collection($import->collection_id); ?>
+                <?php foreach ($imports as $import):
+                    $col = new \Tainacan\Entities\Collection($import->collection_id);
+                    $err_lines = !empty($import->error_log)
+                        ? array_slice(array_filter(explode("\n", $import->error_log)), -10)
+                        : [];
+                ?>
                 <tr>
                     <td><?php echo esc_html(wp_parse_url($import->source_url, PHP_URL_HOST)); ?></td>
                     <td><?php echo esc_html($col->get_name()); ?></td>
                     <td><span class="oai-badge oai-badge-<?php echo esc_attr($import->status); ?>"><?php echo esc_html(ucfirst($import->status)); ?></span></td>
                     <td><?php echo number_format_i18n($import->imported_records); ?> / <?php echo number_format_i18n($import->total_records); ?></td>
+                    <td>
+                        <?php echo number_format_i18n($import->failed_records); ?>
+                        <?php if (!empty($err_lines)): ?>
+                            <a href="#" class="oai-toggle-errors" data-import-id="<?php echo esc_attr($import->id); ?>" style="margin-left:6px;">
+                                <?php esc_html_e('view', 'tainacan-oai-pmh'); ?>
+                            </a>
+                        <?php endif; ?>
+                    </td>
                     <td><?php echo esc_html(date_i18n(get_option('date_format'), strtotime($import->created_at))); ?></td>
                 </tr>
+                <?php if (!empty($err_lines)): ?>
+                <tr class="oai-error-row" id="oai-errors-<?php echo esc_attr($import->id); ?>" style="display:none;">
+                    <td colspan="6">
+                        <strong><?php esc_html_e('Last 10 errors:', 'tainacan-oai-pmh'); ?></strong>
+                        <pre style="white-space:pre-wrap;font-size:11px;background:#f6f7f7;padding:8px;margin:6px 0;border-left:3px solid #d63638;max-height:240px;overflow:auto;"><?php
+                            foreach ($err_lines as $line) echo esc_html($line) . "\n";
+                        ?></pre>
+                    </td>
+                </tr>
+                <?php endif; ?>
                 <?php endforeach; ?>
             </tbody>
         </table>
+        <script>
+        jQuery(function($){
+            $('.oai-toggle-errors').on('click', function(e){
+                e.preventDefault();
+                $('#oai-errors-' + $(this).data('import-id')).toggle();
+            });
+        });
+        </script>
     </div>
 </div>
 <?php endif; ?>

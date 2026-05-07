@@ -340,6 +340,8 @@ class Importer {
 
         $imported = 0; $failed = 0; $skipped = 0;
 
+        $bitstreams_enabled = (bool) Settings::get('import_bitstreams', true);
+
         foreach ($records as $record) {
             $parsed = $this->parse_record($record);
             if (!$parsed) { $failed++; continue; }
@@ -347,7 +349,19 @@ class Importer {
 
             // Deduplicate by OAI identifier — find existing item if previously imported
             $existing = $this->find_item_by_oai_identifier($parsed['identifier']);
-            if ($existing) { $skipped++; continue; }
+            if ($existing) {
+                // Backfill bitstreams for items imported before this feature, or where
+                // an earlier run failed to download them. Re-running the same import
+                // becomes a recovery path rather than a no-op.
+                if ($bitstreams_enabled && !$this->item_has_oai_bitstreams($existing)) {
+                    $bs_errors = $this->enrich_item_with_bitstreams($existing, $parsed['identifier'], $import->source_url);
+                    foreach ($bs_errors as $bs_err) {
+                        $this->append_error_log($import_id, 'bitstream_backfill', '[' . $parsed['identifier'] . '] ' . $bs_err);
+                    }
+                }
+                $skipped++;
+                continue;
+            }
 
             $result = $this->create_item((int) $import->collection_id, $parsed, $mapping);
             if (is_wp_error($result)) {
@@ -357,7 +371,7 @@ class Importer {
                 $imported++;
                 // Best-effort enrichment: download bitstreams via DSpace ORE.
                 // Failures are logged but never fail the item itself.
-                if (Settings::get('import_bitstreams', true)) {
+                if ($bitstreams_enabled) {
                     $bs_errors = $this->enrich_item_with_bitstreams((int) $result, $parsed['identifier'], $import->source_url);
                     foreach ($bs_errors as $bs_err) {
                         $this->append_error_log($import_id, 'bitstream', '[' . $parsed['identifier'] . '] ' . $bs_err);
@@ -499,35 +513,76 @@ class Importer {
 
     /**
      * Downloads ORIGINAL + THUMBNAIL bitstreams advertised in the ORE/Atom view
-     * of the OAI record, attaches them to the Tainacan item, and sets the first
-     * ORIGINAL as the featured image.
+     * of the OAI record, sideloads them as attachments under the Tainacan item,
+     * and wires them into Tainacan's display model:
      *
-     * Repositories that don't expose `ore` (any non-DSpace OAI server) silently
-     * return an empty list — the item just has no attachments.
+     *  - First ORIGINAL → Tainacan's main "Documento" (set_document + set_document_type)
+     *    AND the WordPress featured image (used by Tainacan card listings)
+     *  - Remaining bitstreams → "Anexos" via post_parent (Tainacan auto-lists these)
      *
-     * @return string[] List of human-readable error messages (one per failed bitstream).
+     * Tainacan's get_attachments() excludes BOTH the featured image and the
+     * document attachment from the "Anexos" panel — that's why we must wire
+     * the first ORIGINAL into both slots so additional bitstreams remain visible.
+     *
+     * @return string[] Human-readable error messages (one per failed bitstream).
      */
     private function enrich_item_with_bitstreams(int $item_id, string $oai_identifier, string $source_url): array {
         $errors = [];
         $bitstreams = $this->fetch_ore_bitstreams($source_url, $oai_identifier);
         if (is_wp_error($bitstreams) || empty($bitstreams)) return $errors;
 
-        $featured_set = (bool) get_post_thumbnail_id($item_id);
+        // Process ORIGINALs first so we can promote one before the THUMBNAILs land
+        usort($bitstreams, function ($a, $b) {
+            $rank = fn($x) => $x['bundle'] === 'ORIGINAL' ? 0 : 1;
+            return $rank($a) <=> $rank($b);
+        });
 
+        $first_original_id = null;
         foreach ($bitstreams as $bs) {
             $attachment_id = $this->download_bitstream($item_id, $bs);
             if (is_wp_error($attachment_id)) {
                 $errors[] = $bs['url'] . ': ' . $attachment_id->get_error_message();
                 continue;
             }
-
-            // Promote first ORIGINAL to featured image (post thumbnail)
-            if (!$featured_set && $bs['bundle'] === 'ORIGINAL') {
-                set_post_thumbnail($item_id, $attachment_id);
-                $featured_set = true;
+            if ($first_original_id === null && ($bs['bundle'] ?? '') === 'ORIGINAL') {
+                $first_original_id = (int) $attachment_id;
             }
         }
+
+        if ($first_original_id !== null) {
+            // Featured image — used by Tainacan list/card thumbnails. Don't overwrite
+            // anything the user may have set manually.
+            if (!get_post_thumbnail_id($item_id)) {
+                set_post_thumbnail($item_id, $first_original_id);
+            }
+
+            // Tainacan main document — separate from WP featured image, drives the
+            // big media viewer on the item page. Skip if already set.
+            try {
+                $item = new \Tainacan\Entities\Item($item_id);
+                $current_doc = (string) ($item->get_document() ?? '');
+                $current_type = (string) ($item->get_document_type() ?? '');
+                if ($current_doc === '' || $current_doc === '0' || $current_type === '' || $current_type === 'empty') {
+                    $item->set_document((string) $first_original_id);
+                    $item->set_document_type('attachment');
+                    \Tainacan\Repositories\Items::get_instance()->insert($item);
+                }
+            } catch (\Throwable $e) {
+                $errors[] = 'set_document: ' . $e->getMessage();
+            }
+        }
+
         return $errors;
+    }
+
+    private function item_has_oai_bitstreams(int $item_id): bool {
+        global $wpdb;
+        return (bool) $wpdb->get_var($wpdb->prepare(
+            "SELECT 1 FROM {$wpdb->postmeta} pm
+             JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+             WHERE p.post_parent = %d AND pm.meta_key = '_oai_bitstream_url' LIMIT 1",
+            $item_id
+        ));
     }
 
     /**
