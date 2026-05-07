@@ -1,0 +1,492 @@
+/**
+ * Tainacan OAI-PMH Enhanced - Admin Styles
+ * Integrates with Tainacan admin interface
+ */
+
+/* Subtitle */
+.tainacan-oai-subtitle {
+    color: #606060;
+    margin: 5px 0 0;
+    font-size: 14px;
+}
+
+/* Tab Navigation */
+.tainacan-oai-tabs {
+    display: flex;
+    gap: 0;
+    margin: 20px 0;
+    border-bottom: 1px solid #ddd;
+}
+
+.tainacan-oai-tab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 12px 20px;
+    text-decoration: none;
+    color: #555;
+    border-bottom: 3px solid transparent;
+    transition: all 0.2s ease;
+}
+
+.tainacan-oai-tab:hover {
+    color: #187181;
+    background: #f8f8f8;
+}
+
+.tainacan-oai-tab.active {
+    color: #187181;
+    border-bottom-color: #187181;
+    font-weight: 500;
+}
+
+.tainacan-oai-tab .dashicons {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+}
+
+/* Content Area */
+.tainacan-oai-content {
+    padding: 0;
+}
+
+/* Cards */
+.oai-card {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    margin-bottom: 20px;
+}
+
+.oai-card-header {
+    padding: 15px 20px;
+    border-bottom: 1px solid #eee;
+    background: #fafafa;
+}
+
+.oai-card-header h2 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: #333;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.oai-card-header h2 .dashicons {
+    color: #187181;
+}
+
+.oai-card-body {
+    padding: 20px;
+}
+
+.oai-card-highlight {
+    border-color: #187181;
+    border-width: 2px;
+}
+
+.oai-card-highlight .oai-card-header {
+    background: linear-gradient(135deg, #187181 0%, #298f9e 100%);
+}
+
+.oai-card-highlight .oai-card-header h2 {
+    color: #fff;
+}
+
+.oai-card-highlight .oai-card-header h2 .dashicons {
+    color: #fff;
+}
+
+/* Help Text */
+.oai-help-text {
+    color: #666;
+    margin: 0 0 15px;
+    line-height: 1.5;
+}
+
+/* Endpoint Box */
+.oai-endpoint-box {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.oai-endpoint-box code {
+    flex: 1;
+    padding: 12px 15px;
+    background: #f5f5f5;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 13px;
+    word-break: break-all;
+}
+
+/* Quick Links */
+.oai-quick-links {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-top: 15px;
+    border-top: 1px solid #eee;
+}
+
+.oai-quick-links span {
+    color: #666;
+    font-size: 13px;
+}
+
+.oai-quick-links a {
+    font-size: 12px;
+    padding: 4px 10px;
+    background: #f0f0f0;
+    border-radius: 3px;
+    text-decoration: none;
+    color: #555;
+}
+
+.oai-quick-links a:hover {
+    background: #e0e0e0;
+    color: #187181;
+}
+
+/* Stats Grid */
+.oai-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 15px;
+    margin-bottom: 20px;
+}
+
+.oai-stat-card {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    padding: 20px;
+    display: flex;
+    align-items: flex-start;
+    gap: 15px;
+}
+
+.oai-stat-card.warning {
+    border-left: 4px solid #f0b849;
+}
+
+.oai-stat-icon {
+    width: 45px;
+    height: 45px;
+    background: #e8f4f5;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.oai-stat-icon .dashicons {
+    font-size: 22px;
+    width: 22px;
+    height: 22px;
+    color: #187181;
+}
+
+.oai-stat-number {
+    font-size: 28px;
+    font-weight: 600;
+    color: #333;
+    line-height: 1;
+}
+
+.oai-stat-label {
+    font-size: 13px;
+    color: #666;
+    margin-top: 4px;
+}
+
+.oai-stat-sub {
+    font-size: 12px;
+    color: #999;
+    margin-top: 2px;
+}
+
+/* Grid Layouts */
+.oai-grid-2 {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 20px;
+}
+
+@media (max-width: 900px) {
+    .oai-grid-2 {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Health Status */
+.oai-health-status {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    padding: 15px;
+    background: #f8f8f8;
+    border-radius: 4px;
+    margin-bottom: 15px;
+}
+
+.oai-health-status .dashicons {
+    font-size: 35px;
+    width: 35px;
+    height: 35px;
+}
+
+.oai-health-status.healthy .dashicons { color: #46b450; }
+.oai-health-status.warning .dashicons { color: #f0b849; }
+.oai-health-status.critical .dashicons { color: #dc3545; }
+
+.oai-health-status strong {
+    display: block;
+    font-size: 15px;
+    margin-bottom: 4px;
+}
+
+.oai-health-status p {
+    margin: 0;
+    font-size: 13px;
+    color: #666;
+}
+
+/* Progress Bar */
+.oai-progress-bar {
+    height: 8px;
+    background: #e5e5e5;
+    border-radius: 4px;
+    overflow: hidden;
+    margin: 15px 0;
+}
+
+.oai-progress {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.3s ease;
+}
+
+.oai-progress.healthy { background: #46b450; }
+.oai-progress.warning { background: #f0b849; }
+.oai-progress.critical { background: #dc3545; }
+
+/* Meta Info */
+.oai-meta {
+    font-size: 12px;
+    color: #888;
+    margin: 10px 0;
+}
+
+/* Actions */
+.oai-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 15px;
+}
+
+/* Tables */
+.oai-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.oai-table th,
+.oai-table td {
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+
+.oai-table th {
+    background: #fafafa;
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    color: #666;
+}
+
+.oai-table tbody tr:hover {
+    background: #f9f9f9;
+}
+
+/* Chart Container */
+.oai-chart-container {
+    height: 300px;
+    padding: 10px;
+}
+
+/* Badges */
+.oai-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.oai-badge-completed, .oai-badge-active, .oai-badge-passed {
+    background: #d4edda;
+    color: #155724;
+}
+
+.oai-badge-processing, .oai-badge-pending, .oai-badge-warning {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.oai-badge-failed, .oai-badge-blocked, .oai-badge-error {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+/* Empty State */
+.oai-empty {
+    text-align: center;
+    padding: 40px;
+    color: #888;
+}
+
+/* Form Elements */
+.oai-form-group {
+    margin-bottom: 20px;
+}
+
+.oai-form-group label {
+    display: block;
+    margin-bottom: 6px;
+    font-weight: 500;
+    color: #333;
+}
+
+.oai-form-group .description {
+    font-size: 12px;
+    color: #888;
+    margin-top: 5px;
+}
+
+.oai-input-group {
+    display: flex;
+    gap: 10px;
+}
+
+.oai-input-group input {
+    flex: 1;
+}
+
+.oai-form-row {
+    display: flex;
+    gap: 20px;
+}
+
+.oai-form-row .oai-form-group {
+    flex: 1;
+}
+
+/* Info Box */
+.oai-info-box {
+    background: #e8f4f5;
+    border: 1px solid #b8dde1;
+    border-radius: 4px;
+    padding: 15px 20px;
+    margin: 15px 0;
+}
+
+.oai-info-box h4 {
+    margin: 0 0 10px;
+    color: #187181;
+}
+
+.oai-info-box p {
+    margin: 5px 0;
+    font-size: 13px;
+}
+
+/* Import Wizard */
+.import-step {
+    display: none;
+}
+
+.import-step.active {
+    display: block;
+}
+
+.import-step h3 {
+    margin: 0 0 20px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eee;
+    font-size: 16px;
+    color: #333;
+}
+
+.import-nav {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 25px;
+    padding-top: 20px;
+    border-top: 1px solid #eee;
+}
+
+#mapping-table select {
+    width: 100%;
+}
+
+/* Validation Score */
+.oai-score {
+    text-align: center;
+    padding: 30px;
+}
+
+.oai-score-circle {
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 20px;
+    border: 5px solid #ddd;
+}
+
+.oai-score-circle.good { border-color: #46b450; }
+.oai-score-circle.warning { border-color: #f0b849; }
+.oai-score-circle.bad { border-color: #dc3545; }
+
+.oai-score-value {
+    font-size: 36px;
+    font-weight: 700;
+    color: #333;
+}
+
+.oai-score-summary {
+    display: flex;
+    justify-content: center;
+    gap: 25px;
+    font-size: 14px;
+}
+
+.oai-score-summary .passed { color: #46b450; }
+.oai-score-summary .warnings { color: #856404; }
+.oai-score-summary .failed { color: #dc3545; }
+
+/* Loading */
+.oai-loading {
+    text-align: center;
+    padding: 30px;
+}
+
+.oai-loading .spinner {
+    float: none;
+    margin: 0;
+}
+
+/* Notice Result */
+#endpoint-result .notice {
+    margin: 15px 0 0;
+}
