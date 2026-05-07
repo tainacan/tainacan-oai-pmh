@@ -188,6 +188,29 @@ class Settings {
             'description' => __('How long to wait for a remote OAI request before failing.', 'tainacan-oai-pmh'),
             'default' => 60
         ]);
+
+        // Importer: download bitstreams (DSpace ORE)
+        $tainacan_settings->create_tainacan_setting([
+            'id' => 'oai_import_bitstreams',
+            'title' => __('Importer: Download Bitstreams', 'tainacan-oai-pmh'),
+            'section' => 'tainacan_oai_pmh_settings',
+            'type' => 'boolean',
+            'input_type' => 'checkbox',
+            'label' => __('Download images/files from DSpace-style repositories (ORE format) and attach to imported items.', 'tainacan-oai-pmh'),
+            'default' => true
+        ]);
+
+        // Importer: max bitstream size (MB)
+        $tainacan_settings->create_tainacan_setting([
+            'id' => 'oai_import_max_size_mb',
+            'title' => __('Importer: Max Bitstream Size (MB)', 'tainacan-oai-pmh'),
+            'section' => 'tainacan_oai_pmh_settings',
+            'type' => 'integer',
+            'input_type' => 'number',
+            'input_attrs' => 'min="1" max="500"',
+            'description' => __('Skip bitstreams larger than this. Default 20 MB.', 'tainacan-oai-pmh'),
+            'default' => 20
+        ]);
     }
     
     /**

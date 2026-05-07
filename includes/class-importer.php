@@ -18,6 +18,10 @@ class Importer {
     private const OAI_NS = 'http://www.openarchives.org/OAI/2.0/';
     private const OAI_DC_NS = 'http://www.openarchives.org/OAI/2.0/oai_dc/';
     private const DC_NS = 'http://purl.org/dc/elements/1.1/';
+    private const ATOM_NS = 'http://www.w3.org/2005/Atom';
+    private const OREATOM_NS = 'http://www.openarchives.org/ore/atom/';
+    private const RDF_NS = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
+    private const DCTERMS_NS = 'http://purl.org/dc/terms/';
 
     private string $table;
 
@@ -279,6 +283,11 @@ class Importer {
     public function process_batch(int $import_id, int $batch_size = 10) {
         global $wpdb;
 
+        // Bitstream downloads may take minutes per batch — disable PHP timeout.
+        // The browser polls in chunks, so user-perceived progress remains responsive.
+        if (function_exists('set_time_limit')) @set_time_limit(0);
+        ignore_user_abort(true);
+
         $import = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$this->table} WHERE id = %d", $import_id));
         if (!$import) return new \WP_Error('not_found', __('Import not found.', 'tainacan-oai-pmh'));
         if ($import->status === 'completed') return ['status' => 'completed'];
@@ -346,6 +355,14 @@ class Importer {
                 $this->append_error_log($import_id, $result->get_error_code(), '[' . $parsed['identifier'] . '] ' . $result->get_error_message());
             } else {
                 $imported++;
+                // Best-effort enrichment: download bitstreams via DSpace ORE.
+                // Failures are logged but never fail the item itself.
+                if (Settings::get('import_bitstreams', true)) {
+                    $bs_errors = $this->enrich_item_with_bitstreams((int) $result, $parsed['identifier'], $import->source_url);
+                    foreach ($bs_errors as $bs_err) {
+                        $this->append_error_log($import_id, 'bitstream', '[' . $parsed['identifier'] . '] ' . $bs_err);
+                    }
+                }
             }
         }
 
@@ -478,6 +495,202 @@ class Importer {
     public function get_import(int $id) {
         global $wpdb;
         return $wpdb->get_row($wpdb->prepare("SELECT * FROM {$this->table} WHERE id = %d", $id));
+    }
+
+    /**
+     * Downloads ORIGINAL + THUMBNAIL bitstreams advertised in the ORE/Atom view
+     * of the OAI record, attaches them to the Tainacan item, and sets the first
+     * ORIGINAL as the featured image.
+     *
+     * Repositories that don't expose `ore` (any non-DSpace OAI server) silently
+     * return an empty list — the item just has no attachments.
+     *
+     * @return string[] List of human-readable error messages (one per failed bitstream).
+     */
+    private function enrich_item_with_bitstreams(int $item_id, string $oai_identifier, string $source_url): array {
+        $errors = [];
+        $bitstreams = $this->fetch_ore_bitstreams($source_url, $oai_identifier);
+        if (is_wp_error($bitstreams) || empty($bitstreams)) return $errors;
+
+        $featured_set = (bool) get_post_thumbnail_id($item_id);
+
+        foreach ($bitstreams as $bs) {
+            $attachment_id = $this->download_bitstream($item_id, $bs);
+            if (is_wp_error($attachment_id)) {
+                $errors[] = $bs['url'] . ': ' . $attachment_id->get_error_message();
+                continue;
+            }
+
+            // Promote first ORIGINAL to featured image (post thumbnail)
+            if (!$featured_set && $bs['bundle'] === 'ORIGINAL') {
+                set_post_thumbnail($item_id, $attachment_id);
+                $featured_set = true;
+            }
+        }
+        return $errors;
+    }
+
+    /**
+     * GetRecord using metadataPrefix=ore and parses bitstreams.
+     *
+     * The ORE atom feed exposes:
+     *   - <atom:link rel="aggregates" type="image/jpeg" length="…" href="…"/> → all bitstreams
+     *   - <oreatom:triples><rdf:Description rdf:about="…"><dcterms:description>{ORIGINAL|THUMBNAIL}
+     * Without the triples block we default unknown URLs to ORIGINAL.
+     */
+    private function fetch_ore_bitstreams(string $source_url, string $oai_identifier) {
+        if ($oai_identifier === '') return [];
+
+        $url = $source_url . '?verb=GetRecord&metadataPrefix=ore&identifier=' . urlencode($oai_identifier);
+        $response = $this->request($url);
+        if (is_wp_error($response)) return $response;
+
+        $xml = $this->parse_xml($response);
+        if (is_wp_error($xml)) return $xml;
+        if (isset($xml->error)) return []; // cannotDisseminateFormat etc — repo doesn't speak ORE
+
+        $xml->registerXPathNamespace('atom', self::ATOM_NS);
+        $xml->registerXPathNamespace('oreatom', self::OREATOM_NS);
+        $xml->registerXPathNamespace('rdf', self::RDF_NS);
+        $xml->registerXPathNamespace('dcterms', self::DCTERMS_NS);
+
+        // Map URL → bundle (ORIGINAL/THUMBNAIL) from ore triples
+        $bundle_map = [];
+        $triples = $xml->xpath('//oreatom:triples/rdf:Description') ?: [];
+        foreach ($triples as $desc) {
+            $rdf_attrs = $desc->attributes(self::RDF_NS);
+            $about = $rdf_attrs ? (string) ($rdf_attrs->about ?? '') : '';
+            if ($about === '') continue;
+            $dc_desc = (string) ($desc->children(self::DCTERMS_NS)->description ?? '');
+            if (in_array($dc_desc, ['ORIGINAL', 'THUMBNAIL'], true)) {
+                $bundle_map[$about] = $dc_desc;
+            }
+        }
+
+        $bitstreams = [];
+        $links = $xml->xpath('//atom:entry/atom:link[@rel="aggregates"]') ?: [];
+        foreach ($links as $link) {
+            $href = (string) ($link['href'] ?? '');
+            if ($href === '') continue;
+            $type = (string) ($link['type'] ?? '');
+            $length = isset($link['length']) ? (int) $link['length'] : 0;
+            $bitstreams[] = [
+                'url' => $href,
+                'mime' => $type,
+                'size' => $length,
+                'bundle' => $bundle_map[$href] ?? 'ORIGINAL',
+            ];
+        }
+
+        return $bitstreams;
+    }
+
+    /**
+     * Sideloads a remote file as a WordPress attachment under the given item.
+     *
+     * Pre-flights via HEAD to skip oversize files without downloading them.
+     * Skips bitstreams already imported (matches on _oai_bitstream_url postmeta).
+     *
+     * @return int|\WP_Error Attachment ID on success.
+     */
+    private function download_bitstream(int $item_id, array $bitstream) {
+        if (empty($bitstream['url'])) return new \WP_Error('empty_url', 'Empty bitstream URL.');
+
+        $url = $bitstream['url'];
+        $max_bytes = max(1, (int) Settings::get('import_max_size_mb', 20)) * 1024 * 1024;
+        $sslverify = (bool) Settings::get('importer_sslverify', true);
+
+        // Dedup: same item already has this bitstream attached
+        $existing = get_posts([
+            'post_type' => 'attachment',
+            'post_parent' => $item_id,
+            'meta_key' => '_oai_bitstream_url',
+            'meta_value' => $url,
+            'posts_per_page' => 1,
+            'fields' => 'ids',
+        ]);
+        if (!empty($existing)) return (int) $existing[0];
+
+        // Pre-flight size check via HEAD — saves bandwidth on oversize files
+        $head = wp_remote_head($url, ['timeout' => 30, 'sslverify' => $sslverify, 'redirection' => 3]);
+        if (!is_wp_error($head)) {
+            $cl = (int) wp_remote_retrieve_header($head, 'content-length');
+            if ($cl > 0 && $cl > $max_bytes) {
+                return new \WP_Error('too_large', sprintf(
+                    'Bitstream is %s MB, exceeds %s MB limit.',
+                    number_format($cl / 1048576, 1),
+                    number_format($max_bytes / 1048576, 0)
+                ));
+            }
+        }
+
+        require_once ABSPATH . 'wp-admin/includes/file.php';
+        require_once ABSPATH . 'wp-admin/includes/media.php';
+        require_once ABSPATH . 'wp-admin/includes/image.php';
+
+        $tmp = download_url($url, 120);
+        if (is_wp_error($tmp)) return $tmp;
+
+        // Verify size after download (handles servers that don't send Content-Length)
+        $actual = @filesize($tmp) ?: 0;
+        if ($actual > $max_bytes) {
+            @unlink($tmp);
+            return new \WP_Error('too_large', sprintf(
+                'Downloaded file is %s MB, exceeds %s MB limit.',
+                number_format($actual / 1048576, 1),
+                number_format($max_bytes / 1048576, 0)
+            ));
+        }
+
+        // Build a clean filename from the URL path (decode + sanitize)
+        $path = wp_parse_url($url, PHP_URL_PATH) ?: '';
+        $basename = basename($path);
+        $filename = sanitize_file_name(urldecode($basename));
+        if ($filename === '' || !str_contains($filename, '.')) {
+            // Fall back to a hash if the URL has no usable filename
+            $ext = $this->guess_ext_from_mime($bitstream['mime'] ?? '');
+            $filename = 'bitstream-' . substr(md5($url), 0, 12) . $ext;
+        }
+
+        $file_array = ['name' => $filename, 'tmp_name' => $tmp];
+
+        // Suppress WP MIME-by-extension check failures by passing the upstream MIME hint
+        $overrides = ['test_form' => false];
+        if (!empty($bitstream['mime'])) {
+            // tell WP what to expect; otherwise sideload may reject .jpg.jpg etc.
+            add_filter('upload_mimes', $mime_filter = function ($mimes) use ($bitstream) {
+                $mimes['jpg|jpeg|jpe'] = 'image/jpeg';
+                return $mimes;
+            });
+        }
+
+        $attachment_id = media_handle_sideload($file_array, $item_id, null, $overrides);
+
+        if (isset($mime_filter)) remove_filter('upload_mimes', $mime_filter);
+
+        if (is_wp_error($attachment_id)) {
+            @unlink($tmp);
+            return $attachment_id;
+        }
+
+        update_post_meta($attachment_id, '_oai_bitstream_url', $url);
+        update_post_meta($attachment_id, '_oai_bitstream_bundle', $bitstream['bundle'] ?? 'ORIGINAL');
+        if (!empty($bitstream['mime'])) {
+            update_post_meta($attachment_id, '_oai_bitstream_mime', $bitstream['mime']);
+        }
+        return (int) $attachment_id;
+    }
+
+    private function guess_ext_from_mime(string $mime): string {
+        $map = [
+            'image/jpeg' => '.jpg',
+            'image/png' => '.png',
+            'image/gif' => '.gif',
+            'image/webp' => '.webp',
+            'image/tiff' => '.tif',
+            'application/pdf' => '.pdf',
+        ];
+        return $map[$mime] ?? '.bin';
     }
 
     private function append_error_log(int $import_id, string $code, string $message): void {
