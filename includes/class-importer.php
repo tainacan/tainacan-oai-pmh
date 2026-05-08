@@ -935,11 +935,20 @@ class Importer {
             $bitstreams = $this->fetch_xoai_bitstreams($source_url, $oai_identifier, $import_id);
         }
 
-        // Last-resort: scrape the public DSpace handle page when ALL OAI formats
-        // come back empty. Some DSpace deployments don't list bitstreams in OAI
-        // for permissions or config reasons even though the public web shows them.
+        // 4th: DSpace REST API — when available it returns a structured list with
+        // bundleName ("ORIGINAL" / "THUMBNAIL") and sizeBytes, so we get high-res
+        // ORIGINALs reliably instead of whatever the public HTML happens to expose.
         if (empty($bitstreams) && !is_wp_error($bitstreams)) {
-            $this->log_if($import_id, 'INFO', 'bitstream.fallback', '[' . $oai_identifier . '] All OAI formats empty, scraping DSpace handle page');
+            $this->log_if($import_id, 'INFO', 'bitstream.fallback', '[' . $oai_identifier . '] OAI empty, trying DSpace REST API');
+            $bitstreams = $this->fetch_dspace_rest_bitstreams($source_url, $oai_identifier, $import_id);
+        }
+
+        // Last-resort: scrape the public DSpace handle page when ALL OAI formats
+        // and the REST API come back empty. Some DSpace deployments don't list
+        // bitstreams in OAI for permissions or config reasons even though the
+        // public web shows them.
+        if (empty($bitstreams) && !is_wp_error($bitstreams)) {
+            $this->log_if($import_id, 'INFO', 'bitstream.fallback', '[' . $oai_identifier . '] REST also empty, scraping DSpace handle page');
             $bitstreams = $this->fetch_html_bitstreams($source_url, $oai_identifier, $import_id);
         }
 
@@ -963,6 +972,7 @@ class Importer {
         });
 
         $first_original_id = null;
+        $first_thumbnail_id = null;
         foreach ($bitstreams as $bs) {
             $attachment_id = $this->download_bitstream($item_id, $bs);
             if (is_wp_error($attachment_id)) {
@@ -976,15 +986,30 @@ class Importer {
             if ($first_original_id === null && ($bs['bundle'] ?? '') === 'ORIGINAL') {
                 $first_original_id = (int) $attachment_id;
             }
+            if ($first_thumbnail_id === null && ($bs['bundle'] ?? '') === 'THUMBNAIL') {
+                $first_thumbnail_id = (int) $attachment_id;
+            }
         }
 
-        if ($first_original_id !== null) {
-            // Featured image — used by Tainacan list/card thumbnails. Don't overwrite
-            // anything the user may have set manually.
+        // Pick the best image for Tainacan documento + WordPress featured image.
+        // ORIGINAL bundle = high-res full-size source.
+        // THUMBNAIL bundle = DSpace-generated derivative (small, fixed resolution).
+        // Prefer ORIGINAL but fall back to THUMBNAIL so the item at least gets a
+        // miniatura instead of an empty media panel.
+        $documento_id = $first_original_id;
+        $documento_kind = 'ORIGINAL';
+        if ($documento_id === null && $first_thumbnail_id !== null) {
+            $documento_id = $first_thumbnail_id;
+            $documento_kind = 'THUMBNAIL';
+            $this->log_if($import_id, 'INFO', 'bitstream.thumbnail_used_as_main',
+                '[' . $oai_identifier . '] No ORIGINAL bundle available — using THUMBNAIL as featured image and Tainacan documento (admin can replace later if a higher-res file becomes available)');
+        }
+
+        if ($documento_id !== null) {
             if (!get_post_thumbnail_id($item_id)) {
-                set_post_thumbnail($item_id, $first_original_id);
+                set_post_thumbnail($item_id, $documento_id);
                 $this->log_if($import_id, 'INFO', 'bitstream.thumbnail_set',
-                    '[' . $oai_identifier . '] Featured image set → attachment ' . $first_original_id);
+                    '[' . $oai_identifier . '] Featured image set → attachment ' . $documento_id . ' (' . $documento_kind . ')');
             }
 
             // Tainacan main document — separate from WP featured image, drives the
@@ -994,11 +1019,11 @@ class Importer {
                 $current_doc = (string) ($item->get_document() ?? '');
                 $current_type = (string) ($item->get_document_type() ?? '');
                 if ($current_doc === '' || $current_doc === '0' || $current_type === '' || $current_type === 'empty') {
-                    $item->set_document((string) $first_original_id);
+                    $item->set_document((string) $documento_id);
                     $item->set_document_type('attachment');
                     \Tainacan\Repositories\Items::get_instance()->insert($item);
                     $this->log_if($import_id, 'INFO', 'bitstream.document_set',
-                        '[' . $oai_identifier . '] Tainacan documento set → attachment ' . $first_original_id);
+                        '[' . $oai_identifier . '] Tainacan documento set → attachment ' . $documento_id . ' (' . $documento_kind . ')');
                 }
             } catch (\Throwable $e) {
                 $errors[] = 'set_document: ' . $e->getMessage();
@@ -1006,8 +1031,8 @@ class Importer {
                     '[' . $oai_identifier . '] set_document threw: ' . $e->getMessage());
             }
         } else {
-            $this->log_if($import_id, 'WARN', 'bitstream.no_originals',
-                '[' . $oai_identifier . '] No ORIGINAL bundle bitstream available — Tainacan documento and featured image not set');
+            $this->log_if($import_id, 'WARN', 'bitstream.no_visual',
+                '[' . $oai_identifier . '] No ORIGINAL or THUMBNAIL bitstream — featured image and documento not set');
         }
 
         return $errors;
@@ -1224,6 +1249,91 @@ class Importer {
                     'bundle' => strtoupper($bundle_name) === 'THUMBNAIL' ? 'THUMBNAIL' : 'ORIGINAL',
                 ];
             }
+        }
+        return $bitstreams;
+    }
+
+    /**
+     * DSpace 5/6 REST API fallback. Returns full bundle structure with size info.
+     *
+     *   GET <base>/rest/handle/<handle>?expand=bitstreams
+     *   → { "bitstreams": [
+     *         { "bundleName": "ORIGINAL", "retrieveLink": "...", "sizeBytes": N,
+     *           "format": "image/jpeg", "name": "..." }, ...
+     *     ] }
+     *
+     * Many DSpace 5/6 installs keep this endpoint enabled even when their OAI
+     * suppresses bitstream listings. Returns empty list on 404 / disabled REST
+     * (typical of DSpace 7+ unless mapped to /server/api/...).
+     */
+    private function fetch_dspace_rest_bitstreams(string $source_url, string $oai_identifier, ?int $import_id = null): array {
+        if ($oai_identifier === '') return [];
+
+        if (!preg_match('/^oai:[^:]+:(.+)$/', $oai_identifier, $m)) return [];
+        $handle = $m[1];
+
+        $parts = wp_parse_url($source_url);
+        if (!$parts || empty($parts['host'])) return [];
+        $base = ($parts['scheme'] ?? 'https') . '://' . $parts['host']
+              . (!empty($parts['port']) ? ':' . $parts['port'] : '');
+        $api_url = $base . '/rest/handle/' . $handle . '?expand=bitstreams';
+
+        $this->log_if($import_id, 'INFO', 'bitstream.rest_fetch',
+            '[' . $oai_identifier . '] GET ' . $api_url);
+
+        $sslverify = (bool) Settings::get('importer_sslverify', true);
+        $response = wp_remote_get($api_url, [
+            'timeout' => 30,
+            'sslverify' => $sslverify,
+            'redirection' => 3,
+            'headers' => [
+                'Accept' => 'application/json',
+                'User-Agent' => 'Tainacan-OAI-PMH-Importer/' . TAINACAN_OAI_PMH_VERSION,
+            ],
+        ]);
+
+        if (is_wp_error($response)) {
+            $this->log_if($import_id, 'INFO', 'bitstream.rest_failed',
+                '[' . $oai_identifier . '] REST request failed: ' . $response->get_error_message());
+            return [];
+        }
+        $code = wp_remote_retrieve_response_code($response);
+        if ($code !== 200) {
+            $this->log_if($import_id, 'INFO', 'bitstream.rest_unsupported',
+                '[' . $oai_identifier . '] DSpace REST returned HTTP ' . $code);
+            return [];
+        }
+
+        $body = wp_remote_retrieve_body($response);
+        $data = json_decode($body, true);
+        if (!is_array($data) || empty($data['bitstreams']) || !is_array($data['bitstreams'])) {
+            $this->log_if($import_id, 'INFO', 'bitstream.rest_empty',
+                '[' . $oai_identifier . '] DSpace REST returned no bitstreams');
+            return [];
+        }
+
+        $bitstreams = [];
+        foreach ($data['bitstreams'] as $bs) {
+            $href = (string) ($bs['retrieveLink'] ?? '');
+            if ($href === '') continue;
+            if (strpos($href, 'http') !== 0) {
+                $href = $base . (str_starts_with($href, '/') ? $href : '/' . $href);
+            }
+
+            $bundle_name = strtoupper((string) ($bs['bundleName'] ?? 'ORIGINAL'));
+            // Skip housekeeping bundles (LICENSE, METADATA, TEXT, etc.)
+            if (!in_array($bundle_name, ['ORIGINAL', 'THUMBNAIL'], true)) continue;
+
+            $bitstreams[] = [
+                'url' => $href,
+                'mime' => (string) ($bs['format'] ?? ''),
+                'size' => isset($bs['sizeBytes']) ? (int) $bs['sizeBytes'] : 0,
+                'bundle' => $bundle_name,
+            ];
+        }
+        if (!empty($bitstreams)) {
+            $this->log_if($import_id, 'INFO', 'bitstream.rest_found',
+                '[' . $oai_identifier . '] DSpace REST returned ' . count($bitstreams) . ' bitstream(s)');
         }
         return $bitstreams;
     }
