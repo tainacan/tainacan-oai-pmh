@@ -62,6 +62,9 @@
             $(document).on('click', '.oai-load-full-log', this.loadFullImportLog.bind(this));
             $(document).on('click', '.oai-clear-harvest-log', this.clearHarvestLog.bind(this));
             $(document).on('click', '.oai-load-full-harvest-log', this.loadFullHarvestLog.bind(this));
+
+            // Delete a previous import (history + optionally items)
+            $(document).on('click', '.oai-delete-import', this.deleteImport.bind(this));
         },
 
         // ---------- helpers ----------
@@ -508,6 +511,66 @@
             const newStep = currentStep - 1;
             $('#btn-prev-step').toggle(newStep > 1);
             $('#btn-next-step').show();
+        },
+
+        // ---------- Delete a previous import ----------
+
+        /**
+         * Two-step confirmation flow:
+         *   1. Backend reports how many items the import created
+         *   2. Ask whether to ALSO trash those items, or just remove the history row
+         *   3. Final confirmation, then call ajax_delete_import
+         * Items go to WP Trash so they can be recovered manually.
+         */
+        deleteImport: function (e) {
+            e.preventDefault();
+            const $btn = $(e.currentTarget);
+            const id = $btn.data('import-id');
+
+            this.setLoading($btn, true);
+            this.ajax('tainacan_oai_count_import_items', { import_id: id })
+                .done(function (response) {
+                    TainacanOAI.setLoading($btn, false);
+                    if (!response.success) {
+                        TainacanOAI.notice('error', TainacanOAI.errorMessage(response));
+                        return;
+                    }
+                    const count = parseInt(response.data.count, 10) || 0;
+
+                    let deleteItems = false;
+                    if (count > 0) {
+                        deleteItems = confirm(
+                            'This import has ' + count + ' associated item(s) in Tainacan.\n\n' +
+                            'OK   = move those items (and their attachments) to Trash\n' +
+                            'Cancel = keep items, only remove the history row'
+                        );
+                    }
+
+                    const finalMsg = deleteItems
+                        ? 'Are you sure?\n\n' + count + ' item(s) will be moved to Trash and the import history row will be deleted.'
+                        : 'Remove the import history row?\nImported items will NOT be touched.';
+                    if (!confirm(finalMsg)) return;
+
+                    TainacanOAI.setLoading($btn, true);
+                    TainacanOAI.ajax('tainacan_oai_delete_import', {
+                        import_id: id,
+                        delete_items: deleteItems ? 1 : 0
+                    }, { timeout: 600000 })
+                        .done(function (r) {
+                            if (r.success) {
+                                TainacanOAI.notice('success', r.data.message);
+                                setTimeout(function () { location.reload(); }, 1200);
+                            } else {
+                                TainacanOAI.notice('error', TainacanOAI.errorMessage(r));
+                            }
+                        })
+                        .fail(function () { TainacanOAI.notice('error', tainacanOAI.strings.error); })
+                        .always(function () { TainacanOAI.setLoading($btn, false); });
+                })
+                .fail(function () {
+                    TainacanOAI.setLoading($btn, false);
+                    TainacanOAI.notice('error', tainacanOAI.strings.error);
+                });
         },
 
         // ---------- Activity log viewer ----------

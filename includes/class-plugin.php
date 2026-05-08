@@ -202,6 +202,8 @@ class Plugin extends \Tainacan\Pages {
             'tainacan_oai_clear_harvest_log',
             'tainacan_oai_get_import_log',
             'tainacan_oai_get_harvest_log',
+            'tainacan_oai_count_import_items',
+            'tainacan_oai_delete_import',
         ];
 
         foreach ($handlers as $action) {
@@ -500,6 +502,39 @@ class Plugin extends \Tainacan\Pages {
 
         $source->metadata_mapping = maybe_unserialize($source->metadata_mapping) ?: [];
         wp_send_json_success($source);
+    }
+
+    /**
+     * Returns how many items the given import created (best-effort: direct
+     * tag match + legacy heuristic via source URL host). Used by the UI to
+     * show the count in the delete confirmation prompt.
+     */
+    public function ajax_count_import_items() {
+        $this->authorize_ajax();
+        $id = absint($_POST['import_id'] ?? 0);
+        if (!$id) wp_send_json_error(['message' => __('Invalid import ID.', 'tainacan-oai-pmh')]);
+        wp_send_json_success(['count' => $this->importer->count_import_items($id)]);
+    }
+
+    /**
+     * Removes the import history row and (optionally) trashes the items it
+     * created plus their bitstream attachments. Items go to Trash so admins
+     * can recover them — the row in tainacan_oai_imports is deleted permanently.
+     */
+    public function ajax_delete_import() {
+        $this->authorize_ajax();
+        $id = absint($_POST['import_id'] ?? 0);
+        if (!$id) wp_send_json_error(['message' => __('Invalid import ID.', 'tainacan-oai-pmh')]);
+
+        $delete_items = !empty($_POST['delete_items']);
+        $stats = $this->importer->delete_import($id, $delete_items);
+
+        $msg = $delete_items
+            ? sprintf(__('Import deleted. %d item(s) and %d attachment(s) moved to Trash.', 'tainacan-oai-pmh'),
+                $stats['items_trashed'], $stats['attachments_trashed'])
+            : __('Import history removed. Imported items were preserved.', 'tainacan-oai-pmh');
+
+        wp_send_json_success(['stats' => $stats, 'message' => $msg]);
     }
 
     /** Clears the activity log of one import job. */

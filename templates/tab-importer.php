@@ -129,6 +129,7 @@ $imports = $data['imports'];
                 <th><?php esc_html_e('Imported', 'tainacan-oai-pmh'); ?></th>
                 <th><?php esc_html_e('Failed', 'tainacan-oai-pmh'); ?></th>
                 <th><?php esc_html_e('Date', 'tainacan-oai-pmh'); ?></th>
+                <th><?php esc_html_e('Actions', 'tainacan-oai-pmh'); ?></th>
             </tr></thead>
             <tbody>
                 <?php foreach ($imports as $import):
@@ -152,10 +153,15 @@ $imports = $data['imports'];
                         <?php endif; ?>
                     </td>
                     <td><?php echo esc_html(date_i18n(get_option('date_format'), strtotime($import->created_at . ' UTC'))); ?></td>
+                    <td class="oai-row-actions">
+                        <button type="button" class="button button-small button-link-delete oai-delete-import" data-import-id="<?php echo esc_attr($import->id); ?>" title="<?php esc_attr_e('Delete this import', 'tainacan-oai-pmh'); ?>">
+                            <span class="dashicons dashicons-trash"></span> <?php esc_html_e('Delete', 'tainacan-oai-pmh'); ?>
+                        </button>
+                    </td>
                 </tr>
                 <?php if ($has_log): ?>
                 <tr class="oai-log-row" id="oai-log-<?php echo esc_attr($import->id); ?>" style="display:none;">
-                    <td colspan="6">
+                    <td colspan="7">
                         <div class="oai-log-toolbar">
                             <strong><?php esc_html_e('Activity log (last 25 entries):', 'tainacan-oai-pmh'); ?></strong>
                             <span class="oai-log-actions">

@@ -391,7 +391,7 @@ class Importer {
                 continue;
             }
 
-            $result = $this->create_item((int) $import->collection_id, $parsed, $mapping);
+            $result = $this->create_item((int) $import->collection_id, $parsed, $mapping, $import_id);
             if (is_wp_error($result)) {
                 $failed++;
                 $this->append_log($import_id, 'ERROR', $result->get_error_code(), '[' . $parsed['identifier'] . '] ' . $result->get_error_message());
@@ -631,7 +631,7 @@ class Importer {
         return $found ? (int) $found : null;
     }
 
-    private function create_item(int $collection_id, array $record, array $mapping) {
+    private function create_item(int $collection_id, array $record, array $mapping, ?int $import_id = null) {
         $collection = new \Tainacan\Entities\Collection($collection_id);
         if (!$collection->get_id()) return new \WP_Error('invalid_collection', 'Collection not found.');
 
@@ -663,6 +663,11 @@ class Importer {
         if ($item && $item->get_id()) {
             update_post_meta($item->get_id(), '_tainacan_oai_source_id', $record['identifier']);
             update_post_meta($item->get_id(), '_tainacan_oai_source_datestamp', $record['datestamp']);
+            // Tag the originating import job so admin can later "delete this import"
+            // and remove exactly the items it created (vs. items from other runs).
+            if ($import_id !== null) {
+                update_post_meta($item->get_id(), '_tainacan_oai_import_id', $import_id);
+            }
         }
 
         if (!empty($mapping)) {
@@ -980,6 +985,92 @@ class Importer {
         $combined = $current . $entry;
         if (strlen($combined) > 262144) $combined = substr($combined, -262144);
         $wpdb->update($this->table, ['error_log' => $combined], ['id' => $import_id]);
+    }
+
+    /**
+     * Resolves the items that belong to a given import job.
+     *
+     * Strategy (precise → permissive):
+     *   1. Direct: items tagged with _tainacan_oai_import_id = $import_id (only
+     *      possible for items created after this column existed).
+     *   2. Legacy fallback: items in the import's target collection that carry
+     *      _tainacan_oai_source_id matching the import's source URL host
+     *      (oai:HOST:…). This covers items imported before tagging existed.
+     *
+     * Returned IDs are de-duplicated.
+     */
+    public function find_import_items(int $import_id): array {
+        global $wpdb;
+
+        $direct = $wpdb->get_col($wpdb->prepare(
+            "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value = %s",
+            '_tainacan_oai_import_id', (string) $import_id
+        ));
+        $ids = array_map('intval', (array) $direct);
+
+        // Legacy heuristic: scope by collection + source URL host
+        $job = $wpdb->get_row($wpdb->prepare("SELECT collection_id, source_url FROM {$this->table} WHERE id = %d", $import_id));
+        if ($job) {
+            $host = wp_parse_url($job->source_url, PHP_URL_HOST);
+            if ($host) {
+                $like = '%' . $wpdb->esc_like('oai:' . $host . ':') . '%';
+                $legacy = $wpdb->get_col($wpdb->prepare(
+                    "SELECT pm.post_id
+                     FROM {$wpdb->postmeta} pm
+                     JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+                     WHERE pm.meta_key = %s
+                       AND pm.meta_value LIKE %s
+                       AND p.post_type LIKE %s",
+                    '_tainacan_oai_source_id',
+                    $like,
+                    'tnc_col_' . (int) $job->collection_id . '_item'
+                ));
+                $ids = array_merge($ids, array_map('intval', (array) $legacy));
+            }
+        }
+
+        return array_values(array_unique($ids));
+    }
+
+    public function count_import_items(int $import_id): int {
+        return count($this->find_import_items($import_id));
+    }
+
+    /**
+     * Deletes one import. Always removes the imports row + activity log.
+     * If $delete_items is true, also moves every item the job created to Trash
+     * (and trashes their bitstream attachments). Items go to Trash, not
+     * permanent delete, so admins can recover from Trash if needed.
+     *
+     * @return array{import_deleted:bool, items_trashed:int, attachments_trashed:int}
+     */
+    public function delete_import(int $import_id, bool $delete_items = false): array {
+        global $wpdb;
+
+        $stats = ['import_deleted' => false, 'items_trashed' => 0, 'attachments_trashed' => 0];
+
+        if ($delete_items) {
+            $item_ids = $this->find_import_items($import_id);
+            foreach ($item_ids as $iid) {
+                // Trash bitstream attachments (post_parent = item_id)
+                $atts = get_posts([
+                    'post_type' => 'attachment',
+                    'post_parent' => $iid,
+                    'posts_per_page' => -1,
+                    'fields' => 'ids',
+                    'post_status' => 'any',
+                ]);
+                foreach ($atts as $aid) {
+                    if (wp_trash_post($aid)) $stats['attachments_trashed']++;
+                }
+                if (wp_trash_post($iid)) $stats['items_trashed']++;
+            }
+        }
+
+        $deleted = $wpdb->delete($this->table, ['id' => $import_id]);
+        $stats['import_deleted'] = (bool) $deleted;
+
+        return $stats;
     }
 
     /** Wipes the activity log for one import. */
