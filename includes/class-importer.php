@@ -391,6 +391,31 @@ class Importer {
                 continue;
             }
 
+            // Item was previously trashed (e.g. via the Delete-import button).
+            // Restore it instead of creating a duplicate: untrash the post,
+            // un-trash its attachments, refresh metadata, optionally re-fetch
+            // bitstreams. Counts as "imported" in the run summary.
+            $trashed = $this->find_trashed_item_by_oai_identifier($parsed['identifier']);
+            if ($trashed) {
+                wp_untrash_post($trashed);
+                wp_update_post(['ID' => $trashed, 'post_status' => 'publish']);
+                $att_count = $this->untrash_attachments($trashed);
+                $this->update_item_from_oai($trashed, $parsed, $mapping);
+                update_post_meta($trashed, '_tainacan_oai_import_id', $import_id);
+                $this->append_log(
+                    $import_id, 'INFO', 'record.restored',
+                    '[' . $parsed['identifier'] . '] Restored item ' . $trashed . ' from Trash (and ' . $att_count . ' attachment(s))'
+                );
+                if ($bitstreams_enabled && !$this->item_has_oai_bitstreams($trashed)) {
+                    $bs_errors = $this->enrich_item_with_bitstreams($trashed, $parsed['identifier'], $import->source_url);
+                    foreach ($bs_errors as $bs_err) {
+                        $this->append_log($import_id, 'WARN', 'bitstream', '[' . $parsed['identifier'] . '] ' . $bs_err);
+                    }
+                }
+                $imported++;
+                continue;
+            }
+
             $result = $this->create_item((int) $import->collection_id, $parsed, $mapping, $import_id);
             if (is_wp_error($result)) {
                 $failed++;
@@ -435,6 +460,12 @@ class Importer {
             $this->append_log($import_id, 'INFO', 'import.completed',
                 sprintf('Run finished. Cumulative imported=%d, failed=%d, this-batch skipped=%d',
                     $cumulative_imported, $import->failed_records + $failed, $skipped));
+            // Heads-up when an entire run produced zero new items — most often this
+            // means the records already exist as active items in this WP install.
+            if ($cumulative_imported === 0 && $total > 0) {
+                $this->append_log($import_id, 'WARN', 'import.no_new_items',
+                    'No new items were created. All records matched existing items (dedup). To re-import from scratch, click "Delete" on this import and choose "move items to Trash" — the next run will then restore them as fresh items.');
+            }
         } else {
             $this->append_log($import_id, 'INFO', 'page.has_more', 'Resumption token received — more pages to fetch.');
         }
@@ -563,6 +594,25 @@ class Importer {
                     continue;
                 }
 
+                // Restore-from-trash path (counts as updated in scheduled-harvest stats)
+                $trashed = $this->find_trashed_item_by_oai_identifier($parsed['identifier']);
+                if ($trashed) {
+                    wp_untrash_post($trashed);
+                    wp_update_post(['ID' => $trashed, 'post_status' => 'publish']);
+                    $this->untrash_attachments($trashed);
+                    $upd = $this->update_item_from_oai($trashed, $parsed, $mapping);
+                    if (is_wp_error($upd)) {
+                        $stats['failed']++;
+                        $stats['errors'][] = '[' . $parsed['identifier'] . '] restore: ' . $upd->get_error_message();
+                    } else {
+                        $stats['updated']++;
+                        if ($download_bs && !$this->item_has_oai_bitstreams($trashed)) {
+                            $this->enrich_item_with_bitstreams($trashed, $parsed['identifier'], $url);
+                        }
+                    }
+                    continue;
+                }
+
                 $created = $this->create_item($collection_id, $parsed, $mapping);
                 if (is_wp_error($created)) {
                     $stats['failed']++;
@@ -620,15 +670,57 @@ class Importer {
         return true;
     }
 
+    /**
+     * Looks up an ACTIVE local item that was previously imported from this
+     * OAI identifier. Trashed/auto-draft posts are deliberately excluded so
+     * a previous "Delete import" doesn't pollute the dedup check — those go
+     * through find_trashed_item_by_oai_identifier() and get restored instead.
+     */
     private function find_item_by_oai_identifier(string $oai_identifier): ?int {
         if ($oai_identifier === '') return null;
         global $wpdb;
         $found = $wpdb->get_var($wpdb->prepare(
-            "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value = %s LIMIT 1",
+            "SELECT pm.post_id FROM {$wpdb->postmeta} pm
+             JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+             WHERE pm.meta_key = %s AND pm.meta_value = %s
+               AND p.post_status NOT IN ('trash', 'auto-draft')
+             LIMIT 1",
             '_tainacan_oai_source_id',
             $oai_identifier
         ));
         return $found ? (int) $found : null;
+    }
+
+    /** Counterpart of find_item_by_oai_identifier scoped to trashed items only. */
+    private function find_trashed_item_by_oai_identifier(string $oai_identifier): ?int {
+        if ($oai_identifier === '') return null;
+        global $wpdb;
+        $found = $wpdb->get_var($wpdb->prepare(
+            "SELECT pm.post_id FROM {$wpdb->postmeta} pm
+             JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+             WHERE pm.meta_key = %s AND pm.meta_value = %s
+               AND p.post_status = 'trash'
+             LIMIT 1",
+            '_tainacan_oai_source_id',
+            $oai_identifier
+        ));
+        return $found ? (int) $found : null;
+    }
+
+    /** Restores trashed bitstream attachments belonging to the given item. */
+    private function untrash_attachments(int $item_id): int {
+        $atts = get_posts([
+            'post_type' => 'attachment',
+            'post_parent' => $item_id,
+            'post_status' => 'trash',
+            'posts_per_page' => -1,
+            'fields' => 'ids',
+        ]);
+        $count = 0;
+        foreach ($atts as $aid) {
+            if (wp_untrash_post($aid)) $count++;
+        }
+        return $count;
     }
 
     private function create_item(int $collection_id, array $record, array $mapping, ?int $import_id = null) {
