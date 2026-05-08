@@ -49,6 +49,16 @@ class Harvester {
         $h->run($source_id);
     }
 
+    /**
+     * Formats one log line in the canonical "[ts] [LEVEL] [code] message" form
+     * shared with the Importer's activity log. Keeps log parsing simple in the UI.
+     */
+    private function log_line(string $level, string $code, string $message): string {
+        $level = strtoupper($level);
+        if (!in_array($level, ['INFO', 'WARN', 'ERROR'], true)) $level = 'INFO';
+        return '[' . gmdate('Y-m-d H:i:s') . '] [' . $level . '] [' . $code . '] ' . $message;
+    }
+
     // ---------- CRUD ----------
 
     public function create(array $args) {
@@ -97,6 +107,18 @@ class Harvester {
         global $wpdb;
         $this->unschedule($id);
         return (bool) $wpdb->delete($this->table, ['id' => $id]);
+    }
+
+    /** Wipes the activity log for a single source. */
+    public function clear_log(int $id): bool {
+        global $wpdb;
+        return (bool) $wpdb->update($this->table, ['error_log' => null], ['id' => $id]);
+    }
+
+    /** Wipes the activity log for every source. */
+    public function clear_all_logs(): int {
+        global $wpdb;
+        return (int) $wpdb->query("UPDATE {$this->table} SET error_log = NULL");
     }
 
     public function get(int $id) {
@@ -226,9 +248,30 @@ class Harvester {
             $stats['failed'], $stats['deleted'], $duration
         );
 
-        $error_log = $had_errors
-            ? implode("\n", array_slice($stats['errors'], -20))
-            : null;
+        // Build a structured activity log: lifecycle events + (optional) error tail
+        $log_lines = [];
+        $log_lines[] = $this->log_line('INFO', 'run.start',
+            sprintf('Started harvest %s (from=%s, set=%s, collection=%d)',
+                $source->label, $config['from'] ?: '(full)', $config['set_spec'] ?: '(all)', (int) $source->collection_id));
+        $log_lines[] = $this->log_line('INFO', 'run.fetch',
+            'Pages fetched: ' . $stats['pages'] . ' (cap 200)');
+        $log_lines[] = $this->log_line('INFO', 'run.diff',
+            sprintf('created=%d, updated=%d, skipped=%d, failed=%d, deleted=%d',
+                $stats['created'], $stats['updated'], $stats['skipped'], $stats['failed'], $stats['deleted']));
+        if (!empty($stats['last_datestamp'])) {
+            $log_lines[] = $this->log_line('INFO', 'run.watermark',
+                'New incremental watermark: ' . $stats['last_datestamp']);
+        }
+        foreach (array_slice($stats['errors'], -20) as $err) {
+            $log_lines[] = $this->log_line('ERROR', 'harvest', $err);
+        }
+        $log_lines[] = $this->log_line('INFO', 'run.end', $msg);
+
+        // Append to existing log (preserve history across runs), capped at 256 KB
+        $previous = (string) ($source->error_log ?? '');
+        $combined = $previous . implode("\n", $log_lines) . "\n";
+        if (strlen($combined) > 262144) $combined = substr($combined, -262144);
+        $error_log = $combined;
 
         $update = [
             'last_run_status' => $status,

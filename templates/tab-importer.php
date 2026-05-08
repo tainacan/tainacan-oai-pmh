@@ -133,9 +133,10 @@ $imports = $data['imports'];
             <tbody>
                 <?php foreach ($imports as $import):
                     $col = new \Tainacan\Entities\Collection($import->collection_id);
-                    $err_lines = !empty($import->error_log)
-                        ? array_slice(array_filter(explode("\n", $import->error_log)), -10)
+                    $log_lines = !empty($import->error_log)
+                        ? array_slice(array_filter(explode("\n", $import->error_log)), -25)
                         : [];
+                    $has_log = !empty($log_lines);
                 ?>
                 <tr>
                     <td><?php echo esc_html(wp_parse_url($import->source_url, PHP_URL_HOST)); ?></td>
@@ -144,35 +145,44 @@ $imports = $data['imports'];
                     <td><?php echo number_format_i18n($import->imported_records); ?> / <?php echo number_format_i18n($import->total_records); ?></td>
                     <td>
                         <?php echo number_format_i18n($import->failed_records); ?>
-                        <?php if (!empty($err_lines)): ?>
-                            <a href="#" class="oai-toggle-errors" data-import-id="<?php echo esc_attr($import->id); ?>" style="margin-left:6px;">
-                                <?php esc_html_e('view', 'tainacan-oai-pmh'); ?>
-                            </a>
+                        <?php if ($has_log): ?>
+                            <button type="button" class="button-link oai-toggle-log" data-import-id="<?php echo esc_attr($import->id); ?>" style="margin-left:6px;">
+                                <?php esc_html_e('view log', 'tainacan-oai-pmh'); ?>
+                            </button>
                         <?php endif; ?>
                     </td>
-                    <td><?php echo esc_html(date_i18n(get_option('date_format'), strtotime($import->created_at))); ?></td>
+                    <td><?php echo esc_html(date_i18n(get_option('date_format'), strtotime($import->created_at . ' UTC'))); ?></td>
                 </tr>
-                <?php if (!empty($err_lines)): ?>
-                <tr class="oai-error-row" id="oai-errors-<?php echo esc_attr($import->id); ?>" style="display:none;">
+                <?php if ($has_log): ?>
+                <tr class="oai-log-row" id="oai-log-<?php echo esc_attr($import->id); ?>" style="display:none;">
                     <td colspan="6">
-                        <strong><?php esc_html_e('Last 10 errors:', 'tainacan-oai-pmh'); ?></strong>
-                        <pre style="white-space:pre-wrap;font-size:11px;background:#f6f7f7;padding:8px;margin:6px 0;border-left:3px solid #d63638;max-height:240px;overflow:auto;"><?php
-                            foreach ($err_lines as $line) echo esc_html($line) . "\n";
-                        ?></pre>
+                        <div class="oai-log-toolbar">
+                            <strong><?php esc_html_e('Activity log (last 25 entries):', 'tainacan-oai-pmh'); ?></strong>
+                            <span class="oai-log-actions">
+                                <button type="button" class="button button-small oai-load-full-log" data-import-id="<?php echo esc_attr($import->id); ?>">
+                                    <?php esc_html_e('Show full log', 'tainacan-oai-pmh'); ?>
+                                </button>
+                                <button type="button" class="button button-small button-link-delete oai-clear-import-log" data-import-id="<?php echo esc_attr($import->id); ?>">
+                                    <?php esc_html_e('Clear log', 'tainacan-oai-pmh'); ?>
+                                </button>
+                            </span>
+                        </div>
+                        <div class="oai-log-pane" id="oai-log-pane-<?php echo esc_attr($import->id); ?>">
+                            <?php foreach ($log_lines as $line): ?>
+                                <?php
+                                $cls = 'oai-log-info';
+                                if (strpos($line, '[ERROR]') !== false) $cls = 'oai-log-error';
+                                elseif (strpos($line, '[WARN]') !== false) $cls = 'oai-log-warn';
+                                ?>
+                                <div class="oai-log-line <?php echo esc_attr($cls); ?>"><?php echo esc_html($line); ?></div>
+                            <?php endforeach; ?>
+                        </div>
                     </td>
                 </tr>
                 <?php endif; ?>
                 <?php endforeach; ?>
             </tbody>
         </table>
-        <script>
-        jQuery(function($){
-            $('.oai-toggle-errors').on('click', function(e){
-                e.preventDefault();
-                $('#oai-errors-' + $(this).data('import-id')).toggle();
-            });
-        });
-        </script>
     </div>
 </div>
 <?php endif; ?>

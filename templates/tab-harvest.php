@@ -98,11 +98,31 @@ $schedule_labels = [
                         </button>
                     </td>
                 </tr>
-                <?php if (!empty($s->error_log)): ?>
-                <tr class="oai-source-errors" id="harvest-errors-<?php echo esc_attr($s->id); ?>" style="display:none;">
+                <?php if (!empty($s->error_log)):
+                    $log_lines = array_slice(array_filter(explode("\n", $s->error_log)), -50);
+                ?>
+                <tr class="oai-log-row oai-harvest-log-row" id="harvest-log-<?php echo esc_attr($s->id); ?>" style="display:none;">
                     <td colspan="8">
-                        <strong><?php esc_html_e('Last errors:', 'tainacan-oai-pmh'); ?></strong>
-                        <pre style="white-space:pre-wrap;font-size:11px;background:#f6f7f7;padding:8px;margin:6px 0;border-left:3px solid #d63638;max-height:200px;overflow:auto;"><?php echo esc_html($s->error_log); ?></pre>
+                        <div class="oai-log-toolbar">
+                            <strong><?php esc_html_e('Activity log (last 50 entries):', 'tainacan-oai-pmh'); ?></strong>
+                            <span class="oai-log-actions">
+                                <button type="button" class="button button-small oai-load-full-harvest-log" data-source-id="<?php echo esc_attr($s->id); ?>">
+                                    <?php esc_html_e('Show full log', 'tainacan-oai-pmh'); ?>
+                                </button>
+                                <button type="button" class="button button-small button-link-delete oai-clear-harvest-log" data-source-id="<?php echo esc_attr($s->id); ?>">
+                                    <?php esc_html_e('Clear log', 'tainacan-oai-pmh'); ?>
+                                </button>
+                            </span>
+                        </div>
+                        <div class="oai-log-pane" id="harvest-log-pane-<?php echo esc_attr($s->id); ?>">
+                            <?php foreach ($log_lines as $line):
+                                $cls = 'oai-log-info';
+                                if (strpos($line, '[ERROR]') !== false) $cls = 'oai-log-error';
+                                elseif (strpos($line, '[WARN]') !== false) $cls = 'oai-log-warn';
+                            ?>
+                                <div class="oai-log-line <?php echo esc_attr($cls); ?>"><?php echo esc_html($line); ?></div>
+                            <?php endforeach; ?>
+                        </div>
                     </td>
                 </tr>
                 <?php endif; ?>

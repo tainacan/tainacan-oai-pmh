@@ -198,6 +198,10 @@ class Plugin extends \Tainacan\Pages {
             'tainacan_oai_run_harvest_source',
             'tainacan_oai_toggle_harvest_source',
             'tainacan_oai_get_harvest_source',
+            'tainacan_oai_clear_import_log',
+            'tainacan_oai_clear_harvest_log',
+            'tainacan_oai_get_import_log',
+            'tainacan_oai_get_harvest_log',
         ];
 
         foreach ($handlers as $action) {
@@ -496,6 +500,44 @@ class Plugin extends \Tainacan\Pages {
 
         $source->metadata_mapping = maybe_unserialize($source->metadata_mapping) ?: [];
         wp_send_json_success($source);
+    }
+
+    /** Clears the activity log of one import job. */
+    public function ajax_clear_import_log() {
+        $this->authorize_ajax();
+        $id = absint($_POST['import_id'] ?? 0);
+        if (!$id) wp_send_json_error(['message' => __('Invalid import ID.', 'tainacan-oai-pmh')]);
+        $this->importer->clear_log($id);
+        wp_send_json_success(['message' => __('Log cleared.', 'tainacan-oai-pmh')]);
+    }
+
+    /** Clears the activity log of one harvest source (or all if id=0). */
+    public function ajax_clear_harvest_log() {
+        $this->authorize_ajax();
+        $id = absint($_POST['id'] ?? 0);
+        if ($id > 0) {
+            $this->harvester->clear_log($id);
+        } else {
+            $this->harvester->clear_all_logs();
+        }
+        wp_send_json_success(['message' => __('Log cleared.', 'tainacan-oai-pmh')]);
+    }
+
+    /** Returns the full activity log of one import for the modal viewer. */
+    public function ajax_get_import_log() {
+        $this->authorize_ajax();
+        $id = absint($_POST['import_id'] ?? 0);
+        global $wpdb;
+        $table = $wpdb->prefix . 'tainacan_oai_imports';
+        $log = $wpdb->get_var($wpdb->prepare("SELECT error_log FROM $table WHERE id = %d", $id));
+        wp_send_json_success(['log' => (string) $log]);
+    }
+
+    public function ajax_get_harvest_log() {
+        $this->authorize_ajax();
+        $id = absint($_POST['id'] ?? 0);
+        $source = $this->harvester->get($id);
+        wp_send_json_success(['log' => (string) ($source->error_log ?? '')]);
     }
 
     public function ajax_unblock_ip() {

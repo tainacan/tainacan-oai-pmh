@@ -53,8 +53,15 @@
             $('#harvest-sources-table').on('click', '.btn-toggle-harvest', this.toggleHarvestSource.bind(this));
             $('#toggle-all-harvest-errors').on('click', function (e) {
                 e.preventDefault();
-                $('.oai-source-errors').toggle();
+                $('.oai-harvest-log-row').toggle();
             });
+
+            // Activity log: toggle / clear / show-full (delegated for all tables)
+            $(document).on('click', '.oai-toggle-log', this.toggleImportLog.bind(this));
+            $(document).on('click', '.oai-clear-import-log', this.clearImportLog.bind(this));
+            $(document).on('click', '.oai-load-full-log', this.loadFullImportLog.bind(this));
+            $(document).on('click', '.oai-clear-harvest-log', this.clearHarvestLog.bind(this));
+            $(document).on('click', '.oai-load-full-harvest-log', this.loadFullHarvestLog.bind(this));
         },
 
         // ---------- helpers ----------
@@ -501,6 +508,98 @@
             const newStep = currentStep - 1;
             $('#btn-prev-step').toggle(newStep > 1);
             $('#btn-next-step').show();
+        },
+
+        // ---------- Activity log viewer ----------
+
+        // Renders one parsed log line into the pane with level coloring
+        renderLogLine: function (line) {
+            let cls = 'oai-log-info';
+            if (line.indexOf('[ERROR]') !== -1) cls = 'oai-log-error';
+            else if (line.indexOf('[WARN]') !== -1) cls = 'oai-log-warn';
+            return $('<div>', { 'class': 'oai-log-line ' + cls, text: line });
+        },
+
+        toggleImportLog: function (e) {
+            e.preventDefault();
+            const id = $(e.currentTarget).data('import-id');
+            $('#oai-log-' + id).toggle();
+        },
+
+        clearImportLog: function (e) {
+            e.preventDefault();
+            if (!confirm('Clear the activity log for this import? Items already imported are not affected.')) return;
+            const id = $(e.currentTarget).data('import-id');
+
+            this.ajax('tainacan_oai_clear_import_log', { import_id: id })
+                .done(function (response) {
+                    if (response.success) {
+                        $('#oai-log-' + id).remove();
+                        $('button.oai-toggle-log[data-import-id="' + id + '"]').remove();
+                        TainacanOAI.notice('success', response.data.message);
+                    } else {
+                        TainacanOAI.notice('error', TainacanOAI.errorMessage(response));
+                    }
+                })
+                .fail(function () { TainacanOAI.notice('error', tainacanOAI.strings.error); });
+        },
+
+        loadFullImportLog: function (e) {
+            e.preventDefault();
+            const id = $(e.currentTarget).data('import-id');
+            const $pane = $('#oai-log-pane-' + id).empty().append($('<div>', { text: 'Loading…' }));
+
+            this.ajax('tainacan_oai_get_import_log', { import_id: id })
+                .done(function (response) {
+                    if (!response.success) {
+                        TainacanOAI.notice('error', TainacanOAI.errorMessage(response));
+                        return;
+                    }
+                    TainacanOAI.fillLogPane($pane, response.data.log);
+                });
+        },
+
+        clearHarvestLog: function (e) {
+            e.preventDefault();
+            if (!confirm('Clear the activity log for this harvest source?')) return;
+            const id = $(e.currentTarget).data('source-id');
+
+            this.ajax('tainacan_oai_clear_harvest_log', { id: id })
+                .done(function (response) {
+                    if (response.success) {
+                        $('#harvest-log-' + id).remove();
+                        TainacanOAI.notice('success', response.data.message);
+                    } else {
+                        TainacanOAI.notice('error', TainacanOAI.errorMessage(response));
+                    }
+                });
+        },
+
+        loadFullHarvestLog: function (e) {
+            e.preventDefault();
+            const id = $(e.currentTarget).data('source-id');
+            const $pane = $('#harvest-log-pane-' + id).empty().append($('<div>', { text: 'Loading…' }));
+
+            this.ajax('tainacan_oai_get_harvest_log', { id: id })
+                .done(function (response) {
+                    if (!response.success) {
+                        TainacanOAI.notice('error', TainacanOAI.errorMessage(response));
+                        return;
+                    }
+                    TainacanOAI.fillLogPane($pane, response.data.log);
+                });
+        },
+
+        fillLogPane: function ($pane, logText) {
+            $pane.empty();
+            const lines = String(logText || '').split('\n').filter(Boolean);
+            if (lines.length === 0) {
+                $pane.append($('<div>', { 'class': 'oai-log-line', text: '(log is empty)' }));
+                return;
+            }
+            lines.forEach(function (line) {
+                $pane.append(TainacanOAI.renderLogLine(line));
+            });
         },
 
         // ---------- Harvest sources (scheduled) ----------

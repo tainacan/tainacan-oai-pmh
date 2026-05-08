@@ -302,39 +302,55 @@ class Importer {
         // Per OAI-PMH spec: when using a resumption token, only verb + token allowed.
         if (!empty($import->resumption_token)) {
             $url = $import->source_url . '?verb=ListRecords&resumptionToken=' . urlencode($import->resumption_token);
+            $this->append_log($import_id, 'INFO', 'page.fetch', 'Fetching with resumption token (token len ' . strlen($import->resumption_token) . ')');
         } else {
             $url = $import->source_url . '?verb=ListRecords&metadataPrefix=oai_dc';
             if (!empty($import->set_spec))   $url .= '&set='   . urlencode($import->set_spec);
             if (!empty($import->from_date))  $url .= '&from='  . urlencode($import->from_date);
             if (!empty($import->until_date)) $url .= '&until=' . urlencode($import->until_date);
+            $this->append_log($import_id, 'INFO', 'page.fetch', 'First page: ' . $url);
         }
 
+        $t_request = microtime(true);
         $response = $this->request($url);
         if (is_wp_error($response)) {
-            $this->append_error_log($import_id, 'request_failed', $response->get_error_message());
+            $this->append_log($import_id, 'ERROR', 'request_failed', $response->get_error_message());
             return $response;
         }
 
         $xml = $this->parse_xml($response);
         if (is_wp_error($xml)) {
-            $this->append_error_log($import_id, 'parse_error', $xml->get_error_message());
+            $this->append_log($import_id, 'ERROR', 'parse_error', $xml->get_error_message());
             return $xml;
         }
 
         if (isset($xml->error)) {
             $code = (string) $xml->error['code'];
             if ($code === 'noRecordsMatch') {
+                $this->append_log($import_id, 'INFO', 'noRecordsMatch', 'Upstream reports no records match the criteria — marking import completed.');
                 $wpdb->update($this->table, [
                     'status' => 'completed',
                     'completed_at' => gmdate('Y-m-d H:i:s'),
                 ], ['id' => $import_id]);
                 return ['status' => 'completed', 'has_more' => false, 'total_imported' => (int) $import->imported_records, 'failed' => (int) $import->failed_records];
             }
-            $this->append_error_log($import_id, $code, (string) $xml->error);
+            $this->append_log($import_id, 'ERROR', $code, (string) $xml->error);
             return new \WP_Error($code, (string) $xml->error);
         }
 
         $records = $xml->ListRecords->record ?? [];
+        $records_count = is_countable($records) ? count($records) : iterator_count($records);
+        $rt_preview = $xml->ListRecords->resumptionToken ?? null;
+        $clsize = ($rt_preview && isset($rt_preview['completeListSize'])) ? (int) $rt_preview['completeListSize'] : 0;
+        $this->append_log(
+            $import_id, 'INFO', 'page.received',
+            sprintf('Got %d record(s)%s in %.2fs',
+                $records_count,
+                $clsize > 0 ? sprintf(' (completeListSize=%d)', $clsize) : '',
+                microtime(true) - $t_request
+            )
+        );
+
         $mapping = maybe_unserialize($import->metadata_mapping);
         if (!is_array($mapping)) $mapping = [];
 
@@ -344,20 +360,32 @@ class Importer {
 
         foreach ($records as $record) {
             $parsed = $this->parse_record($record);
-            if (!$parsed) { $failed++; continue; }
-            if ($parsed['status'] === 'deleted') { $skipped++; continue; }
+            if (!$parsed) {
+                $failed++;
+                $this->append_log($import_id, 'ERROR', 'parse_record', 'Failed to parse a record (missing header?)');
+                continue;
+            }
+            if ($parsed['status'] === 'deleted') {
+                $skipped++;
+                $this->append_log($import_id, 'INFO', 'record.deleted_upstream', '[' . $parsed['identifier'] . '] Marked deleted upstream — skipped');
+                continue;
+            }
 
             // Deduplicate by OAI identifier — find existing item if previously imported
             $existing = $this->find_item_by_oai_identifier($parsed['identifier']);
             if ($existing) {
-                // Backfill bitstreams for items imported before this feature, or where
-                // an earlier run failed to download them. Re-running the same import
-                // becomes a recovery path rather than a no-op.
-                if ($bitstreams_enabled && !$this->item_has_oai_bitstreams($existing)) {
+                $had_bs = $this->item_has_oai_bitstreams($existing);
+                if ($bitstreams_enabled && !$had_bs) {
+                    $this->append_log($import_id, 'INFO', 'bitstream.backfill_start', '[' . $parsed['identifier'] . '] Item ' . $existing . ' exists but has no bitstreams — backfilling');
                     $bs_errors = $this->enrich_item_with_bitstreams($existing, $parsed['identifier'], $import->source_url);
                     foreach ($bs_errors as $bs_err) {
-                        $this->append_error_log($import_id, 'bitstream_backfill', '[' . $parsed['identifier'] . '] ' . $bs_err);
+                        $this->append_log($import_id, 'WARN', 'bitstream_backfill', '[' . $parsed['identifier'] . '] ' . $bs_err);
                     }
+                    if (empty($bs_errors)) {
+                        $this->append_log($import_id, 'INFO', 'bitstream.backfill_done', '[' . $parsed['identifier'] . '] Backfill completed for item ' . $existing);
+                    }
+                } else {
+                    $this->append_log($import_id, 'INFO', 'record.skipped_existing', '[' . $parsed['identifier'] . '] Item ' . $existing . ' exists' . ($had_bs ? ' (has bitstreams)' : '') . ' — skipped');
                 }
                 $skipped++;
                 continue;
@@ -366,15 +394,14 @@ class Importer {
             $result = $this->create_item((int) $import->collection_id, $parsed, $mapping);
             if (is_wp_error($result)) {
                 $failed++;
-                $this->append_error_log($import_id, $result->get_error_code(), '[' . $parsed['identifier'] . '] ' . $result->get_error_message());
+                $this->append_log($import_id, 'ERROR', $result->get_error_code(), '[' . $parsed['identifier'] . '] ' . $result->get_error_message());
             } else {
                 $imported++;
-                // Best-effort enrichment: download bitstreams via DSpace ORE.
-                // Failures are logged but never fail the item itself.
+                $this->append_log($import_id, 'INFO', 'record.created', '[' . $parsed['identifier'] . '] Created item ' . (int) $result);
                 if ($bitstreams_enabled) {
                     $bs_errors = $this->enrich_item_with_bitstreams((int) $result, $parsed['identifier'], $import->source_url);
                     foreach ($bs_errors as $bs_err) {
-                        $this->append_error_log($import_id, 'bitstream', '[' . $parsed['identifier'] . '] ' . $bs_err);
+                        $this->append_log($import_id, 'WARN', 'bitstream', '[' . $parsed['identifier'] . '] ' . $bs_err);
                     }
                 }
             }
@@ -383,23 +410,40 @@ class Importer {
         $rt = $xml->ListRecords->resumptionToken ?? null;
         $token = $rt ? trim((string) $rt) : '';
         $total = isset($rt['completeListSize']) ? (int) $rt['completeListSize'] : (int) $import->total_records;
+        $cumulative_imported = $import->imported_records + $imported;
 
         $update = [
-            'imported_records' => $import->imported_records + $imported,
+            'imported_records' => $cumulative_imported,
             'failed_records' => $import->failed_records + $failed,
             'resumption_token' => $token !== '' ? $token : null,
         ];
         if ($total > 0) $update['total_records'] = $total;
+
         if ($token === '') {
+            // OAI servers signal end-of-list with an empty resumptionToken.
+            // Detect the suspicious case where the response advertises more records
+            // than we actually imported — this is upstream misbehavior worth flagging.
+            if ($total > 0 && $cumulative_imported < $total && ($skipped + $failed) < ($total - $cumulative_imported)) {
+                $this->append_log(
+                    $import_id, 'WARN', 'page.unexpected_end',
+                    sprintf('Upstream returned an empty resumption token but only %d / %d records were processed across all batches. The server may have stopped pagination prematurely.',
+                        $cumulative_imported + $skipped + $failed, $total)
+                );
+            }
             $update['status'] = 'completed';
             $update['completed_at'] = gmdate('Y-m-d H:i:s');
+            $this->append_log($import_id, 'INFO', 'import.completed',
+                sprintf('Run finished. Cumulative imported=%d, failed=%d, this-batch skipped=%d',
+                    $cumulative_imported, $import->failed_records + $failed, $skipped));
+        } else {
+            $this->append_log($import_id, 'INFO', 'page.has_more', 'Resumption token received — more pages to fetch.');
         }
 
         $wpdb->update($this->table, $update, ['id' => $import_id]);
 
         return [
             'status' => $token === '' ? 'completed' : 'processing',
-            'total_imported' => $import->imported_records + $imported,
+            'total_imported' => $cumulative_imported,
             'total_records' => $total ?: (int) $import->total_records,
             'failed' => $import->failed_records + $failed,
             'skipped' => $skipped,
@@ -917,14 +961,39 @@ class Importer {
         return $map[$mime] ?? '.bin';
     }
 
-    private function append_error_log(int $import_id, string $code, string $message): void {
+    /**
+     * Appends a structured entry to the import's activity log.
+     *
+     * Format:  [YYYY-MM-DD HH:MM:SS] [LEVEL] [code] message
+     * Levels:  INFO  — normal lifecycle (created, updated, skipped reasons…)
+     *          WARN  — non-fatal anomaly (token unexpectedly empty, partial data)
+     *          ERROR — failure (HTTP, parse, validation, mapping)
+     *
+     * Caps total log at 256 KB so verbose runs don't bloat the imports row.
+     */
+    public function append_log(int $import_id, string $level, string $code, string $message): void {
         global $wpdb;
-        $entry = '[' . gmdate('Y-m-d H:i:s') . '] ' . $code . ': ' . $message . "\n";
-        // Cap log size at 64 KB to prevent runaway growth
+        $level = strtoupper($level);
+        if (!in_array($level, ['INFO', 'WARN', 'ERROR'], true)) $level = 'INFO';
+        $entry = '[' . gmdate('Y-m-d H:i:s') . '] [' . $level . '] [' . $code . '] ' . $message . "\n";
         $current = (string) $wpdb->get_var($wpdb->prepare("SELECT error_log FROM {$this->table} WHERE id = %d", $import_id));
         $combined = $current . $entry;
-        if (strlen($combined) > 65536) $combined = substr($combined, -65536);
+        if (strlen($combined) > 262144) $combined = substr($combined, -262144);
         $wpdb->update($this->table, ['error_log' => $combined], ['id' => $import_id]);
+    }
+
+    /** Wipes the activity log for one import. */
+    public function clear_log(int $import_id): bool {
+        global $wpdb;
+        return (bool) $wpdb->update($this->table, ['error_log' => null], ['id' => $import_id]);
+    }
+
+    /**
+     * Back-compat thin wrapper. New code should call append_log() directly.
+     * @deprecated use append_log()
+     */
+    private function append_error_log(int $import_id, string $code, string $message): void {
+        $this->append_log($import_id, 'ERROR', $code, $message);
     }
 
     private function normalize_url(string $url): string {
