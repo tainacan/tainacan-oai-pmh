@@ -1,4 +1,14 @@
 <?php
+/**
+ * Plugin Check / phpcs suppressions: this file creates the plugin's custom
+ * tables (CREATE TABLE / ALTER TABLE) — that's its entire job.
+ *
+ * phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery
+ * phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching
+ * phpcs:disable WordPress.DB.DirectDatabaseQuery.SchemaChange
+ * phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+ * phpcs:disable WordPress.DB.PreparedSQL.NotPrepared
+ */
 namespace Tainacan_OAI_PMH;
 
 if (!defined('ABSPATH')) exit;

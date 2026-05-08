@@ -1,4 +1,7 @@
 <?php
+/**
+ * phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound
+ */
 if (!defined('ABSPATH')) exit;
 
 $cache_stats = $data['cache_stats'];
@@ -42,25 +45,25 @@ $base_url = $data['base_url'];
     <div class="oai-stat-card">
         <div class="oai-stat-icon"><span class="dashicons dashicons-database"></span></div>
         <div class="oai-stat-content">
-            <div class="oai-stat-number"><?php echo number_format_i18n($cache_stats['total_items']); ?></div>
+            <div class="oai-stat-number"><?php echo esc_html(number_format_i18n($cache_stats['total_items'])); ?></div>
             <div class="oai-stat-label"><?php esc_html_e('Indexed Items', 'tainacan-oai-pmh'); ?></div>
-            <div class="oai-stat-sub"><?php echo number_format_i18n($cache_stats['published_items']); ?> <?php esc_html_e('published', 'tainacan-oai-pmh'); ?></div>
+            <div class="oai-stat-sub"><?php echo esc_html(number_format_i18n($cache_stats['published_items'])); ?> <?php esc_html_e('published', 'tainacan-oai-pmh'); ?></div>
         </div>
     </div>
     
     <div class="oai-stat-card">
         <div class="oai-stat-icon"><span class="dashicons dashicons-chart-bar"></span></div>
         <div class="oai-stat-content">
-            <div class="oai-stat-number"><?php echo number_format_i18n($log_stats['total_requests']); ?></div>
+            <div class="oai-stat-number"><?php echo esc_html(number_format_i18n($log_stats['total_requests'])); ?></div>
             <div class="oai-stat-label"><?php esc_html_e('Requests (24h)', 'tainacan-oai-pmh'); ?></div>
-            <div class="oai-stat-sub"><?php echo $log_stats['avg_response_time']; ?>s <?php esc_html_e('avg', 'tainacan-oai-pmh'); ?></div>
+            <div class="oai-stat-sub"><?php echo esc_html((string) $log_stats['avg_response_time']); ?>s <?php esc_html_e('avg', 'tainacan-oai-pmh'); ?></div>
         </div>
     </div>
     
     <div class="oai-stat-card <?php echo $log_stats['errors'] > 0 ? 'warning' : ''; ?>">
         <div class="oai-stat-icon"><span class="dashicons dashicons-warning"></span></div>
         <div class="oai-stat-content">
-            <div class="oai-stat-number"><?php echo number_format_i18n($log_stats['errors']); ?></div>
+            <div class="oai-stat-number"><?php echo esc_html(number_format_i18n($log_stats['errors'])); ?></div>
             <div class="oai-stat-label"><?php esc_html_e('Errors (24h)', 'tainacan-oai-pmh'); ?></div>
         </div>
     </div>
@@ -68,9 +71,9 @@ $base_url = $data['base_url'];
     <div class="oai-stat-card">
         <div class="oai-stat-icon"><span class="dashicons dashicons-groups"></span></div>
         <div class="oai-stat-content">
-            <div class="oai-stat-number"><?php echo number_format_i18n($harvester_stats['total']); ?></div>
+            <div class="oai-stat-number"><?php echo esc_html(number_format_i18n($harvester_stats['total'])); ?></div>
             <div class="oai-stat-label"><?php esc_html_e('Harvesters', 'tainacan-oai-pmh'); ?></div>
-            <div class="oai-stat-sub"><?php echo number_format_i18n($harvester_stats['last_24h']); ?> <?php esc_html_e('active today', 'tainacan-oai-pmh'); ?></div>
+            <div class="oai-stat-sub"><?php echo esc_html(number_format_i18n($harvester_stats['last_24h'])); ?> <?php esc_html_e('active today', 'tainacan-oai-pmh'); ?></div>
         </div>
     </div>
 </div>
@@ -92,7 +95,15 @@ $base_url = $data['base_url'];
                         else esc_html_e('Needs Reindex', 'tainacan-oai-pmh');
                         ?>
                     </strong>
-                    <p><?php printf(esc_html__('%1$d of %2$d items indexed (%3$s%%)', 'tainacan-oai-pmh'), $index_health['cached_items'], $index_health['wp_items'], $index_health['sync_percentage']); ?></p>
+                    <p><?php
+                        /* translators: 1: cached items count, 2: total Tainacan items count, 3: sync percentage */
+                        printf(
+                            esc_html__('%1$d of %2$d items indexed (%3$s%%)', 'tainacan-oai-pmh'),
+                            (int) $index_health['cached_items'],
+                            (int) $index_health['wp_items'],
+                            esc_html((string) $index_health['sync_percentage'])
+                        );
+                    ?></p>
                 </div>
             </div>
             
@@ -131,7 +142,7 @@ $base_url = $data['base_url'];
                         <?php foreach ($collection_stats as $col): ?>
                         <tr>
                             <td><?php echo esc_html($col['name']); ?></td>
-                            <td><?php echo number_format_i18n($col['count']); ?></td>
+                            <td><?php echo esc_html(number_format_i18n($col['count'])); ?></td>
                             <td>
                                 <button type="button" class="button button-small btn-reindex-collection" data-collection="<?php echo esc_attr($col['id']); ?>">
                                     <?php esc_html_e('Reindex', 'tainacan-oai-pmh'); ?>

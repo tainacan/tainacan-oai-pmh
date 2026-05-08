@@ -1,4 +1,16 @@
 <?php
+/**
+ * Plugin Check / phpcs file-level suppressions:
+ *  - This class operates exclusively on a custom plugin table
+ *    (`{$wpdb->prefix}tainacan_oai_cache`) which has no WP_Query alternative,
+ *    so direct $wpdb usage is required.
+ *  - Table names are interpolated from $this->table (set once in __construct
+ *    from $wpdb->prefix), never user input.
+ *
+ * phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery
+ * phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching
+ * phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+ */
 namespace Tainacan_OAI_PMH;
 
 if (!defined('ABSPATH')) exit;
@@ -61,9 +73,10 @@ class Cache {
         $params[] = $args['per_page'];
         $params[] = $offset;
         
-        $sql = "SELECT * FROM {$this->table} WHERE " . implode(' AND ', $where) . 
+        $sql = "SELECT * FROM {$this->table} WHERE " . implode(' AND ', $where) .
                " ORDER BY item_id ASC LIMIT %d OFFSET %d";
-        
+
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- $sql is built from %s/%d placeholders + the trusted table name; values pass through prepare().
         return $wpdb->get_results($wpdb->prepare($sql, $params));
     }
     
@@ -95,11 +108,13 @@ class Cache {
         }
         
         $sql = "SELECT COUNT(*) FROM {$this->table} WHERE " . implode(' AND ', $where);
-        
+
         if ($params) {
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- placeholders + values via prepare()
             $sql = $wpdb->prepare($sql, $params);
         }
-        
+
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- $sql is either a constant query or already prepared above
         return (int) $wpdb->get_var($sql);
     }
     

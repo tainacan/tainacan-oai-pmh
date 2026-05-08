@@ -1,4 +1,7 @@
 <?php
+/**
+ * phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound
+ */
 if (!defined('ABSPATH')) exit;
 
 $collections = $data['collections'] ?? [];
@@ -74,12 +77,18 @@ $schedule_labels = [
                     <td><?php echo esc_html($next_run); ?></td>
                     <td>
                         <small>
-                            <?php echo esc_html(sprintf(
-                                __('+%d / ~%d / -%d', 'tainacan-oai-pmh'),
+                            <?php
+                            /* translators: 1: items created, 2: items updated, 3: items deleted */
+                            echo esc_html(sprintf(
+                                __('+%1$d / ~%2$d / -%3$d', 'tainacan-oai-pmh'),
                                 (int) $s->items_created, (int) $s->items_updated, (int) $s->items_deleted
-                            )); ?>
+                            ));
+                            ?>
                             <?php if ((int) $s->items_failed > 0): ?>
-                                <br><span style="color:#d63638;"><?php echo esc_html(sprintf(__('%d failed', 'tainacan-oai-pmh'), (int) $s->items_failed)); ?></span>
+                                <br><span style="color:#d63638;"><?php
+                                    /* translators: %d: number of failed items */
+                                    echo esc_html(sprintf(__('%d failed', 'tainacan-oai-pmh'), (int) $s->items_failed));
+                                ?></span>
                             <?php endif; ?>
                         </small>
                     </td>

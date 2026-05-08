@@ -1,4 +1,15 @@
 <?php
+/**
+ * Plugin Check / phpcs suppressions: imports row + postmeta dedup require
+ * direct $wpdb access against custom + WP core tables.
+ *
+ * phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery
+ * phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching
+ * phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+ * phpcs:disable WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+ * phpcs:disable WordPress.DB.SlowDBQuery.slow_db_query_meta_value
+ * phpcs:disable WordPress.PHP.DevelopmentFunctions.error_log_error_log
+ */
 namespace Tainacan_OAI_PMH;
 
 if (!defined('ABSPATH')) exit;
@@ -365,6 +376,7 @@ class Importer {
         // Validate optional dates against OAI-PMH granularity
         foreach (['from_date', 'until_date'] as $f) {
             if (!empty($args[$f]) && !$this->is_valid_oai_date($args[$f])) {
+                /* translators: %s: name of the invalid date field (from_date or until_date) */
                 return new \WP_Error('invalid_date', sprintf(__('Invalid %s — use YYYY-MM-DD or YYYY-MM-DDThh:mm:ssZ.', 'tainacan-oai-pmh'), $f));
             }
         }
@@ -957,6 +969,7 @@ class Importer {
             $args[] = 'tnc_col_' . (int) $collection_id . '_item';
         }
         $sql .= " LIMIT 1";
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- $sql uses %s placeholders supplied via $args; prepare() is being called.
         $found = $wpdb->get_var($wpdb->prepare($sql, $args));
         return $found ? (int) $found : null;
     }
@@ -975,6 +988,7 @@ class Importer {
             $args[] = 'tnc_col_' . (int) $collection_id . '_item';
         }
         $sql .= " LIMIT 1";
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- $sql is built from constants + %s placeholders; values pass through prepare().
         $found = $wpdb->get_var($wpdb->prepare($sql, $args));
         return $found ? (int) $found : null;
     }
@@ -1878,7 +1892,7 @@ class Importer {
         // Verify size after download (handles servers that don't send Content-Length)
         $actual = @filesize($tmp) ?: 0;
         if ($actual > $max_bytes) {
-            @unlink($tmp);
+            wp_delete_file($tmp);
             return new \WP_Error('too_large', sprintf(
                 'Downloaded file is %s MB, exceeds %s MB limit.',
                 number_format($actual / 1048576, 1),
@@ -1913,7 +1927,7 @@ class Importer {
         if (isset($mime_filter)) remove_filter('upload_mimes', $mime_filter);
 
         if (is_wp_error($attachment_id)) {
-            @unlink($tmp);
+            wp_delete_file($tmp);
             return $attachment_id;
         }
 
@@ -2126,6 +2140,7 @@ class Importer {
             if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
                 return new \WP_Error(
                     'private_address',
+                    /* translators: %s: the resolved private/reserved IP address that was rejected */
                     sprintf(__('URL points to a private/reserved address (%s) — refused for security.', 'tainacan-oai-pmh'), $ip)
                 );
             }

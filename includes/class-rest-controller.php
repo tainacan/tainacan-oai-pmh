@@ -236,7 +236,10 @@ class REST_Controller {
         $response->set_data($xml->output());
         
         add_filter('rest_pre_serve_request', function($served, $result) {
-            echo $result->get_data();
+            // Output is well-formed OAI-PMH XML produced by DOMDocument::saveXML
+            // (XML_Generator). Running it through esc_html() would corrupt the
+            // XML structure (entities re-encoded, tags broken).
+            echo $result->get_data(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
             return true;
         }, 10, 2);
         

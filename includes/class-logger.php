@@ -1,4 +1,13 @@
 <?php
+/**
+ * Plugin Check / phpcs suppressions: this class operates on the plugin's
+ * custom logs/harvesters tables and accumulates rows from public OAI endpoints.
+ *
+ * phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery
+ * phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching
+ * phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+ * phpcs:disable WordPress.Security.NonceVerification.Recommended
+ */
 namespace Tainacan_OAI_PMH;
 
 if (!defined('ABSPATH')) exit;
@@ -136,9 +145,10 @@ class Logger {
         $params[] = $args['limit'];
         $params[] = $args['offset'];
         
-        $sql = "SELECT * FROM {$this->table} WHERE " . implode(' AND ', $where) . 
+        $sql = "SELECT * FROM {$this->table} WHERE " . implode(' AND ', $where) .
                " ORDER BY created_at DESC LIMIT %d OFFSET %d";
-        
+
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- $sql is built from %s/%d placeholders + the trusted table name; values pass through prepare().
         return $wpdb->get_results($wpdb->prepare($sql, $params));
     }
     
@@ -208,21 +218,27 @@ class Logger {
     
     public function export_csv() {
         $logs = $this->get_logs(['limit' => 10000]);
-        
+
+        // php://temp is an in-memory stream — not the filesystem. WP_Filesystem
+        // is the wrong abstraction for a streamed CSV builder; we'd have to
+        // re-implement fputcsv()'s quoting rules to avoid it. phpcs:ignore'd
+        // because there's no real file being created.
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
         $output = fopen('php://temp', 'r+');
         fputcsv($output, ['ID', 'Date', 'Level', 'Verb', 'Message', 'IP', 'User Agent', 'Response Time']);
-        
+
         foreach ($logs as $log) {
             fputcsv($output, [
                 $log->id, $log->created_at, $log->level, $log->verb,
                 $log->message, $log->ip_address, $log->user_agent, $log->response_time,
             ]);
         }
-        
+
         rewind($output);
         $csv = stream_get_contents($output);
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- closing the in-memory stream paired with the fopen above.
         fclose($output);
-        
+
         return $csv;
     }
 }

@@ -1,4 +1,8 @@
 <?php
+/**
+ * phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery
+ * phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching
+ */
 namespace Tainacan_OAI_PMH;
 
 if (!defined('ABSPATH')) exit;

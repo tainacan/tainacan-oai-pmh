@@ -8,7 +8,6 @@
  * Author URI: https://tainacan.org
  * License: GPL v3 or later
  * Text Domain: tainacan-oai-pmh
- * Domain Path: /languages
  * Requires at least: 6.0
  * Requires PHP: 8.1
  * Requires Plugins: tainacan
@@ -22,10 +21,9 @@ define('TAINACAN_OAI_PMH_DIR', plugin_dir_path(__FILE__));
 define('TAINACAN_OAI_PMH_URL', plugin_dir_url(__FILE__));
 define('TAINACAN_OAI_PMH_BASENAME', plugin_basename(__FILE__));
 
-// Load textdomain
-add_action('plugins_loaded', function() {
-    load_plugin_textdomain('tainacan-oai-pmh', false, dirname(TAINACAN_OAI_PMH_BASENAME) . '/languages');
-});
+// Translation loading: WordPress 4.6+ auto-loads translations for plugins on
+// the WP.org directory based on the Text Domain header. No need for an
+// explicit load_plugin_textdomain() call (PluginCheck flags it as discouraged).
 
 // Initialize plugin after Tainacan loads
 add_action('plugins_loaded', function() {

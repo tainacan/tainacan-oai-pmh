@@ -1,4 +1,7 @@
 <?php
+/**
+ * phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound
+ */
 if (!defined('ABSPATH')) exit;
 $harvesters = $data['harvesters'];
 $stats = $data['harvester_stats'];
@@ -9,28 +12,28 @@ $blocked = $data['blocked_ips'];
     <div class="oai-stat-card">
         <div class="oai-stat-icon"><span class="dashicons dashicons-groups"></span></div>
         <div class="oai-stat-content">
-            <div class="oai-stat-number"><?php echo number_format_i18n($stats['total']); ?></div>
+            <div class="oai-stat-number"><?php echo esc_html(number_format_i18n($stats['total'])); ?></div>
             <div class="oai-stat-label"><?php esc_html_e('Total Harvesters', 'tainacan-oai-pmh'); ?></div>
         </div>
     </div>
     <div class="oai-stat-card">
         <div class="oai-stat-icon"><span class="dashicons dashicons-yes-alt"></span></div>
         <div class="oai-stat-content">
-            <div class="oai-stat-number"><?php echo number_format_i18n($stats['active']); ?></div>
+            <div class="oai-stat-number"><?php echo esc_html(number_format_i18n($stats['active'])); ?></div>
             <div class="oai-stat-label"><?php esc_html_e('Active', 'tainacan-oai-pmh'); ?></div>
         </div>
     </div>
     <div class="oai-stat-card">
         <div class="oai-stat-icon"><span class="dashicons dashicons-clock"></span></div>
         <div class="oai-stat-content">
-            <div class="oai-stat-number"><?php echo number_format_i18n($stats['last_24h']); ?></div>
+            <div class="oai-stat-number"><?php echo esc_html(number_format_i18n($stats['last_24h'])); ?></div>
             <div class="oai-stat-label"><?php esc_html_e('Last 24h', 'tainacan-oai-pmh'); ?></div>
         </div>
     </div>
     <div class="oai-stat-card">
         <div class="oai-stat-icon"><span class="dashicons dashicons-chart-bar"></span></div>
         <div class="oai-stat-content">
-            <div class="oai-stat-number"><?php echo number_format_i18n($stats['total_requests']); ?></div>
+            <div class="oai-stat-number"><?php echo esc_html(number_format_i18n($stats['total_requests'])); ?></div>
             <div class="oai-stat-label"><?php esc_html_e('Total Requests', 'tainacan-oai-pmh'); ?></div>
         </div>
     </div>
@@ -86,7 +89,7 @@ $blocked = $data['blocked_ips'];
                     <td><small><?php echo esc_html(substr($h->user_agent, 0, 60)); ?></small></td>
                     <td><?php echo esc_html(date_i18n('Y-m-d H:i', strtotime($h->first_seen))); ?></td>
                     <td><?php echo esc_html(date_i18n('Y-m-d H:i', strtotime($h->last_seen))); ?></td>
-                    <td><strong><?php echo number_format_i18n($h->total_requests); ?></strong></td>
+                    <td><strong><?php echo esc_html(number_format_i18n($h->total_requests)); ?></strong></td>
                 </tr>
                 <?php endforeach; ?>
             </tbody>

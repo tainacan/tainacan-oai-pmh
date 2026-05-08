@@ -1,4 +1,7 @@
 <?php
+/**
+ * phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound
+ */
 if (!defined('ABSPATH')) exit;
 $logger = new \Tainacan_OAI_PMH\Logger();
 $logs = $logger->get_logs(['limit' => 100]);

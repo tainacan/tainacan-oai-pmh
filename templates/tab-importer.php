@@ -1,4 +1,7 @@
 <?php
+/**
+ * phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound
+ */
 if (!defined('ABSPATH')) exit;
 $collections = $data['collections'];
 $imports = $data['imports'];
@@ -168,9 +171,9 @@ $imports = $data['imports'];
                     <td><?php echo esc_html($col->get_name()); ?></td>
                     <td><code style="font-size:11px;"><?php echo esc_html($import->metadata_prefix ?? 'oai_dc'); ?></code></td>
                     <td><span class="oai-badge oai-badge-<?php echo esc_attr($import->status); ?>"><?php echo esc_html(ucfirst($import->status)); ?></span></td>
-                    <td><?php echo number_format_i18n($import->imported_records); ?> / <?php echo number_format_i18n($import->total_records); ?></td>
+                    <td><?php echo esc_html(number_format_i18n($import->imported_records)); ?> / <?php echo esc_html(number_format_i18n($import->total_records)); ?></td>
                     <td>
-                        <?php echo number_format_i18n($import->failed_records); ?>
+                        <?php echo esc_html(number_format_i18n($import->failed_records)); ?>
                         <?php if ($has_log): ?>
                             <button type="button" class="button-link oai-toggle-log" data-import-id="<?php echo esc_attr($import->id); ?>" style="margin-left:6px;">
                                 <?php esc_html_e('view log', 'tainacan-oai-pmh'); ?>
