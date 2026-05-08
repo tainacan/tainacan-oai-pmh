@@ -378,7 +378,7 @@ class Importer {
                 $had_bs = $this->item_has_oai_bitstreams($existing);
                 if ($bitstreams_enabled && !$had_bs) {
                     $this->append_log($import_id, 'INFO', 'bitstream.backfill_start', '[' . $parsed['identifier'] . '] Item ' . $existing . ' exists but has no bitstreams — backfilling');
-                    $bs_errors = $this->enrich_item_with_bitstreams($existing, $parsed['identifier'], $import->source_url);
+                    $bs_errors = $this->enrich_item_with_bitstreams($existing, $parsed['identifier'], $import->source_url, $import_id);
                     foreach ($bs_errors as $bs_err) {
                         $this->append_log($import_id, 'WARN', 'bitstream_backfill', '[' . $parsed['identifier'] . '] ' . $bs_err);
                     }
@@ -408,7 +408,7 @@ class Importer {
                     '[' . $parsed['identifier'] . '] Restored item ' . $trashed . ' from Trash (and ' . $att_count . ' attachment(s))'
                 );
                 if ($bitstreams_enabled && !$this->item_has_oai_bitstreams($trashed)) {
-                    $bs_errors = $this->enrich_item_with_bitstreams($trashed, $parsed['identifier'], $import->source_url);
+                    $bs_errors = $this->enrich_item_with_bitstreams($trashed, $parsed['identifier'], $import->source_url, $import_id);
                     foreach ($bs_errors as $bs_err) {
                         $this->append_log($import_id, 'WARN', 'bitstream', '[' . $parsed['identifier'] . '] ' . $bs_err);
                     }
@@ -436,7 +436,7 @@ class Importer {
                 }
 
                 if ($bitstreams_enabled) {
-                    $bs_errors = $this->enrich_item_with_bitstreams((int) $result, $parsed['identifier'], $import->source_url);
+                    $bs_errors = $this->enrich_item_with_bitstreams((int) $result, $parsed['identifier'], $import->source_url, $import_id);
                     foreach ($bs_errors as $bs_err) {
                         $this->append_log($import_id, 'WARN', 'bitstream', '[' . $parsed['identifier'] . '] ' . $bs_err);
                     }
@@ -888,10 +888,31 @@ class Importer {
      *
      * @return string[] Human-readable error messages (one per failed bitstream).
      */
-    private function enrich_item_with_bitstreams(int $item_id, string $oai_identifier, string $source_url): array {
+    private function enrich_item_with_bitstreams(int $item_id, string $oai_identifier, string $source_url, ?int $import_id = null): array {
         $errors = [];
-        $bitstreams = $this->fetch_ore_bitstreams($source_url, $oai_identifier);
-        if (is_wp_error($bitstreams) || empty($bitstreams)) return $errors;
+        $this->log_if($import_id, 'INFO', 'bitstream.start', '[' . $oai_identifier . '] Looking up bitstreams via ORE');
+
+        $bitstreams = $this->fetch_ore_bitstreams($source_url, $oai_identifier, $import_id);
+
+        // Fallback to METS if ORE returns nothing (some DSpace deployments emit ORE
+        // with an empty oreatom:triples / no atom:link aggregates for certain items)
+        if (empty($bitstreams) && !is_wp_error($bitstreams)) {
+            $this->log_if($import_id, 'INFO', 'bitstream.fallback', '[' . $oai_identifier . '] ORE returned no bitstreams, trying METS');
+            $bitstreams = $this->fetch_mets_bitstreams($source_url, $oai_identifier, $import_id);
+        }
+
+        if (is_wp_error($bitstreams)) {
+            $this->log_if($import_id, 'WARN', 'bitstream.fetch_failed', '[' . $oai_identifier . '] ' . $bitstreams->get_error_message());
+            return $errors;
+        }
+        if (empty($bitstreams)) {
+            $this->log_if($import_id, 'INFO', 'bitstream.none', '[' . $oai_identifier . '] No bitstreams advertised by upstream (item may be metadata-only or restricted)');
+            return $errors;
+        }
+        $this->log_if($import_id, 'INFO', 'bitstream.found',
+            '[' . $oai_identifier . '] ' . count($bitstreams) . ' bitstream(s) found: ' .
+            implode(', ', array_map(fn($b) => ($b['bundle'] ?? '?') . ' ' . basename(wp_parse_url($b['url'], PHP_URL_PATH) ?: ''), $bitstreams))
+        );
 
         // Process ORIGINALs first so we can promote one before the THUMBNAILs land
         usort($bitstreams, function ($a, $b) {
@@ -904,8 +925,12 @@ class Importer {
             $attachment_id = $this->download_bitstream($item_id, $bs);
             if (is_wp_error($attachment_id)) {
                 $errors[] = $bs['url'] . ': ' . $attachment_id->get_error_message();
+                $this->log_if($import_id, 'WARN', 'bitstream.download_failed',
+                    '[' . $oai_identifier . '] ' . $bs['url'] . ' → ' . $attachment_id->get_error_message());
                 continue;
             }
+            $this->log_if($import_id, 'INFO', 'bitstream.attached',
+                '[' . $oai_identifier . '] ' . ($bs['bundle'] ?? 'ORIGINAL') . ' → attachment ' . (int) $attachment_id);
             if ($first_original_id === null && ($bs['bundle'] ?? '') === 'ORIGINAL') {
                 $first_original_id = (int) $attachment_id;
             }
@@ -916,6 +941,8 @@ class Importer {
             // anything the user may have set manually.
             if (!get_post_thumbnail_id($item_id)) {
                 set_post_thumbnail($item_id, $first_original_id);
+                $this->log_if($import_id, 'INFO', 'bitstream.thumbnail_set',
+                    '[' . $oai_identifier . '] Featured image set → attachment ' . $first_original_id);
             }
 
             // Tainacan main document — separate from WP featured image, drives the
@@ -928,13 +955,25 @@ class Importer {
                     $item->set_document((string) $first_original_id);
                     $item->set_document_type('attachment');
                     \Tainacan\Repositories\Items::get_instance()->insert($item);
+                    $this->log_if($import_id, 'INFO', 'bitstream.document_set',
+                        '[' . $oai_identifier . '] Tainacan documento set → attachment ' . $first_original_id);
                 }
             } catch (\Throwable $e) {
                 $errors[] = 'set_document: ' . $e->getMessage();
+                $this->log_if($import_id, 'WARN', 'bitstream.document_failed',
+                    '[' . $oai_identifier . '] set_document threw: ' . $e->getMessage());
             }
+        } else {
+            $this->log_if($import_id, 'WARN', 'bitstream.no_originals',
+                '[' . $oai_identifier . '] No ORIGINAL bundle bitstream available — Tainacan documento and featured image not set');
         }
 
         return $errors;
+    }
+
+    /** No-op wrapper: only logs when an import_id was supplied (e.g. from process_batch). */
+    private function log_if(?int $import_id, string $level, string $code, string $message): void {
+        if ($import_id !== null) $this->append_log($import_id, $level, $code, $message);
     }
 
     private function item_has_oai_bitstreams(int $item_id): bool {
@@ -955,16 +994,29 @@ class Importer {
      *   - <oreatom:triples><rdf:Description rdf:about="…"><dcterms:description>{ORIGINAL|THUMBNAIL}
      * Without the triples block we default unknown URLs to ORIGINAL.
      */
-    private function fetch_ore_bitstreams(string $source_url, string $oai_identifier) {
+    private function fetch_ore_bitstreams(string $source_url, string $oai_identifier, ?int $import_id = null) {
         if ($oai_identifier === '') return [];
 
         $url = $source_url . '?verb=GetRecord&metadataPrefix=ore&identifier=' . urlencode($oai_identifier);
         $response = $this->request($url);
-        if (is_wp_error($response)) return $response;
+        if (is_wp_error($response)) {
+            $this->log_if($import_id, 'WARN', 'bitstream.ore_request_failed',
+                '[' . $oai_identifier . '] ORE GetRecord failed: ' . $response->get_error_message());
+            return $response;
+        }
 
         $xml = $this->parse_xml($response);
-        if (is_wp_error($xml)) return $xml;
-        if (isset($xml->error)) return []; // cannotDisseminateFormat etc — repo doesn't speak ORE
+        if (is_wp_error($xml)) {
+            $this->log_if($import_id, 'WARN', 'bitstream.ore_parse_failed',
+                '[' . $oai_identifier . '] ORE response unparseable: ' . $xml->get_error_message());
+            return $xml;
+        }
+        if (isset($xml->error)) {
+            $code = (string) $xml->error['code'];
+            $this->log_if($import_id, 'INFO', 'bitstream.ore_unsupported',
+                '[' . $oai_identifier . '] ORE error: ' . $code . ' — will try METS fallback');
+            return [];
+        }
 
         $xml->registerXPathNamespace('atom', self::ATOM_NS);
         $xml->registerXPathNamespace('oreatom', self::OREATOM_NS);
@@ -999,6 +1051,66 @@ class Importer {
             ];
         }
 
+        return $bitstreams;
+    }
+
+    /**
+     * Fallback bitstream discovery via metadataPrefix=mets.
+     * Used when ORE returns empty or unsupported (some DSpace deployments
+     * answer ORE successfully but with no atom:link aggregates for items
+     * uploaded a certain way).
+     *
+     * METS uses <mets:fileGrp USE="ORIGINAL|THUMBNAIL"><mets:file>
+     *   <mets:FLocat xlink:href="..."/></mets:file></mets:fileGrp>
+     */
+    private function fetch_mets_bitstreams(string $source_url, string $oai_identifier, ?int $import_id = null) {
+        if ($oai_identifier === '') return [];
+
+        $url = $source_url . '?verb=GetRecord&metadataPrefix=mets&identifier=' . urlencode($oai_identifier);
+        $response = $this->request($url);
+        if (is_wp_error($response)) {
+            $this->log_if($import_id, 'WARN', 'bitstream.mets_request_failed',
+                '[' . $oai_identifier . '] METS GetRecord failed: ' . $response->get_error_message());
+            return [];
+        }
+
+        $xml = $this->parse_xml($response);
+        if (is_wp_error($xml)) return [];
+        if (isset($xml->error)) {
+            $this->log_if($import_id, 'INFO', 'bitstream.mets_unsupported',
+                '[' . $oai_identifier . '] METS error: ' . (string) $xml->error['code']);
+            return [];
+        }
+
+        $METS_NS = 'http://www.loc.gov/METS/';
+        $XLINK_NS = 'http://www.w3.org/1999/xlink';
+        $xml->registerXPathNamespace('mets', $METS_NS);
+        $xml->registerXPathNamespace('xlink', $XLINK_NS);
+
+        $bitstreams = [];
+        $groups = $xml->xpath('//mets:fileGrp') ?: [];
+        foreach ($groups as $grp) {
+            $bundle = (string) ($grp['USE'] ?? '');
+            if ($bundle === '') $bundle = 'ORIGINAL';
+
+            $files = $grp->xpath('.//mets:file') ?: [];
+            foreach ($files as $f) {
+                $mime = (string) ($f['MIMETYPE'] ?? '');
+                $size = isset($f['SIZE']) ? (int) $f['SIZE'] : 0;
+                $locs = $f->xpath('.//mets:FLocat') ?: [];
+                foreach ($locs as $loc) {
+                    $href_attr = $loc->attributes($XLINK_NS);
+                    $href = $href_attr ? (string) ($href_attr->href ?? '') : '';
+                    if ($href === '') continue;
+                    $bitstreams[] = [
+                        'url' => $href,
+                        'mime' => $mime,
+                        'size' => $size,
+                        'bundle' => strtoupper($bundle) === 'THUMBNAIL' ? 'THUMBNAIL' : 'ORIGINAL',
+                    ];
+                }
+            }
+        }
         return $bitstreams;
     }
 
