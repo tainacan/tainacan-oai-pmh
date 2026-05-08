@@ -410,8 +410,14 @@ class Plugin extends \Tainacan\Pages {
         if (!$import_id) wp_send_json_error(['message' => __('Invalid import ID.', 'tainacan-oai-pmh')]);
         $table = $wpdb->prefix . 'tainacan_oai_imports';
         $wpdb->update($table, ['status' => 'cancelled'], ['id' => $import_id]);
+
+        // Also release any stale concurrency lock so a stuck import can be
+        // immediately restarted/deleted by the admin instead of waiting for
+        // the 30-minute transient TTL.
+        $this->importer->release_import_lock($import_id);
+
         wp_send_json_success([
-            'message' => __('Stop requested. The current batch will finish and no new batch will start.', 'tainacan-oai-pmh'),
+            'message' => __('Stop requested. The current batch will finish and no new batch will start. Concurrency lock released.', 'tainacan-oai-pmh'),
         ]);
     }
 

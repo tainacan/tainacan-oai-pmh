@@ -498,6 +498,16 @@
                     TainacanOAI.pollDelay = 750;
 
                     const data = response.data;
+
+                    // Concurrency: another worker is still inside process_batch.
+                    // Wait substantially longer before polling again so we don't
+                    // pile up requests against the same import_id.
+                    if (data.status === 'busy' || data.busy) {
+                        $('#import-status').text('Another worker is still importing this batch — waiting…');
+                        setTimeout(function () { TainacanOAI.processImport(); }, 30000);
+                        return;
+                    }
+
                     const progress = data.total_records > 0
                         ? Math.round((data.total_imported / data.total_records) * 100)
                         : 0;

@@ -415,6 +415,7 @@ class Importer {
         if ($import->status === 'cancelled') {
             $this->append_log($import_id, 'INFO', 'import.cancelled',
                 'Run aborted — admin clicked Stop. Already-imported items are preserved.');
+            $this->release_import_lock($import_id);
             return [
                 'status' => 'cancelled',
                 'has_more' => false,
@@ -424,6 +425,29 @@ class Importer {
                 'skipped' => 0,
             ];
         }
+
+        // Concurrency guard: when AJAX times out (default 5 min) and the JS
+        // poller fires a retry, the server-side worker is still running. Without
+        // a lock, every retry spawns ANOTHER worker that re-fetches page 1
+        // because the running one hasn't saved the resumption_token yet.
+        // Result: stuck on page 1 forever, multiple workers competing.
+        // The lock returns 'busy' so the poller backs off until the active
+        // worker finishes its batch and releases the lock.
+        $lock = $this->acquire_import_lock($import_id);
+        if (!$lock) {
+            return [
+                'status' => 'busy',
+                'has_more' => true,
+                'busy' => true,
+                'total_imported' => (int) $import->imported_records,
+                'total_records' => (int) $import->total_records,
+                'failed' => (int) $import->failed_records,
+                'skipped' => 0,
+                'message' => 'Another worker is still processing this import — waiting',
+            ];
+        }
+        // Even on fatal/timeout, release the lock so the next poll can proceed
+        register_shutdown_function([$this, 'release_import_lock'], $import_id);
 
         if ($import->status === 'pending') {
             $wpdb->update($this->table, [
@@ -453,12 +477,14 @@ class Importer {
         $response = $this->request($url);
         if (is_wp_error($response)) {
             $this->append_log($import_id, 'ERROR', 'request_failed', $response->get_error_message());
+            $this->release_import_lock($import_id);
             return $response;
         }
 
         $xml = $this->parse_xml($response);
         if (is_wp_error($xml)) {
             $this->append_log($import_id, 'ERROR', 'parse_error', $xml->get_error_message());
+            $this->release_import_lock($import_id);
             return $xml;
         }
 
@@ -470,9 +496,11 @@ class Importer {
                     'status' => 'completed',
                     'completed_at' => gmdate('Y-m-d H:i:s'),
                 ], ['id' => $import_id]);
+                $this->release_import_lock($import_id);
                 return ['status' => 'completed', 'has_more' => false, 'total_imported' => (int) $import->imported_records, 'failed' => (int) $import->failed_records];
             }
             $this->append_log($import_id, 'ERROR', $code, (string) $xml->error);
+            $this->release_import_lock($import_id);
             return new \WP_Error($code, (string) $xml->error);
         }
 
@@ -522,7 +550,11 @@ class Importer {
                 'Bitstream download is DISABLED. Items will be created with metadata only. Toggle "Importer: Download Bitstreams" in Tainacan → Settings → OAI-PMH (or check the wizard option) to enable.');
         }
 
+        $this->append_log($import_id, 'INFO', 'page.processing',
+            sprintf('Entering record loop (%d record(s) in this page)', is_countable($records) ? count($records) : iterator_count($records)));
+
         foreach ($records as $idx => $record) {
+            try {
             // Cooperative cancellation: re-check status every 5 records so a
             // Stop click during a long batch takes effect within seconds.
             if ($idx > 0 && $idx % 5 === 0) {
@@ -628,6 +660,16 @@ class Importer {
                     }
                 }
             }
+            } catch (\Throwable $e) {
+                // Per-record safety net: an exception on one record (Tainacan
+                // validation, broken XML, plugin conflict) must not nuke the
+                // whole batch — the lock would never release and subsequent
+                // polls would loop forever fetching page 1.
+                $failed++;
+                $oai_id = isset($parsed['identifier']) ? $parsed['identifier'] : 'record-' . $idx;
+                $this->append_log($import_id, 'ERROR', 'record_exception',
+                    '[' . $oai_id . '] Unhandled: ' . $e->getMessage());
+            }
         }
 
         $rt = $xml->ListRecords->resumptionToken ?? null;
@@ -647,6 +689,7 @@ class Importer {
             $update['status'] = 'cancelled';
             $update['completed_at'] = gmdate('Y-m-d H:i:s');
             $wpdb->update($this->table, $update, ['id' => $import_id]);
+            $this->release_import_lock($import_id);
             return [
                 'status' => 'cancelled',
                 'has_more' => false,
@@ -684,6 +727,7 @@ class Importer {
         }
 
         $wpdb->update($this->table, $update, ['id' => $import_id]);
+        $this->release_import_lock($import_id);
 
         return [
             'status' => $token === '' ? 'completed' : 'processing',
@@ -1993,6 +2037,23 @@ class Importer {
         $stats['import_deleted'] = (bool) $deleted;
 
         return $stats;
+    }
+
+    /**
+     * Acquires an exclusive lock for processing this import. Returns false
+     * when another worker is already inside process_batch for the same id.
+     * TTL of 30 minutes is the safety net if the holding worker crashes
+     * between register_shutdown_function not firing for some reason.
+     */
+    private function acquire_import_lock(int $import_id): bool {
+        $key = 'tainacan_oai_lock_' . $import_id;
+        if (get_transient($key) !== false) return false;
+        set_transient($key, ['pid' => getmypid() ?: 0, 't' => time()], 30 * MINUTE_IN_SECONDS);
+        return true;
+    }
+
+    public function release_import_lock(int $import_id): void {
+        delete_transient('tainacan_oai_lock_' . $import_id);
     }
 
     /** Wipes the activity log for one import. */
