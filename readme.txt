@@ -4,7 +4,7 @@ Tags: oai-pmh, tainacan, dspace, harvester, dublin-core
 Requires at least: 6.0
 Tested up to: 6.9
 Requires PHP: 8.1
-Stable tag: 2.1.2
+Stable tag: 0.5.1
 License: GPLv3 or later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -42,19 +42,20 @@ Yes for metadata. Bitstream download falls back gracefully when the upstream is 
 
 == Changelog ==
 
-= 2.1.2 =
-* Per-import metadataPrefix selection (oai_dc / qdc / xoai) for richer DSpace field names.
-* Per-import concurrency lock prevents stuck-on-page-1 loops.
-* In-memory dedup safety net + verify postmeta after create.
-* Stop button + cancellation flow.
-* Wizard state persistence in localStorage.
-* Five-tier bitstream fallback chain for DSpace.
-
-= 2.1.1 =
-* download_bitstreams override per import; xOAI bitstream fallback.
-
-= 2.1.0 =
-* Scheduled harvest sources with insert/update/delete diff.
-* Structured activity log + clearable per import.
-* Bitstream sideload pipeline (ORE/METS/xOAI/REST/HTML) for DSpace.
-* SSRF guard, rate-limiter race fixes, atomic UTC timestamps.
+= 0.5.1 =
+* First public release on the Tainacan organization repo
+  (https://github.com/tainacan/tainacan-oai-pmh).
+* OAI-PMH 2.0 provider with full verb coverage and oai_dc / qdc / xoai
+  metadata formats.
+* One-shot importer wizard (Connect → Filter → Collection → Mapping → Start).
+* Scheduled harvest sources with incremental insert/update/delete diff.
+* DSpace bitstream pipeline with five-tier fallback (ORE → METS → xOAI →
+  REST → HTML scrape) and HEAD probe for ORIGINAL bitstreams.
+* Concurrency lock per import_id, Stop button mid-run, cooperative
+  cancellation, restore-from-Trash on re-import.
+* Activity log with INFO / WARN / ERROR levels, clearable per row,
+  full-log viewer.
+* Wizard state persistence (localStorage), per-import metadataPrefix +
+  per-import bitstream override, dedup escopado por collection.
+* SSRF guard, atomic UTC timestamps, atomic rate-limiter via
+  INSERT … ON DUPLICATE KEY UPDATE.
