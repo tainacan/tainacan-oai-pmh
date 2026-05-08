@@ -1014,6 +1014,8 @@ class Importer {
 
             // Tainacan main document — separate from WP featured image, drives the
             // big media viewer on the item page. Skip if already set.
+            // Tainacan's Items::insert() requires entity->validate() FIRST or it
+            // throws "Entities must be validated before you can save them".
             try {
                 $item = new \Tainacan\Entities\Item($item_id);
                 $current_doc = (string) ($item->get_document() ?? '');
@@ -1021,9 +1023,17 @@ class Importer {
                 if ($current_doc === '' || $current_doc === '0' || $current_type === '' || $current_type === 'empty') {
                     $item->set_document((string) $documento_id);
                     $item->set_document_type('attachment');
-                    \Tainacan\Repositories\Items::get_instance()->insert($item);
-                    $this->log_if($import_id, 'INFO', 'bitstream.document_set',
-                        '[' . $oai_identifier . '] Tainacan documento set → attachment ' . $documento_id . ' (' . $documento_kind . ')');
+                    if ($item->validate()) {
+                        \Tainacan\Repositories\Items::get_instance()->insert($item);
+                        $this->log_if($import_id, 'INFO', 'bitstream.document_set',
+                            '[' . $oai_identifier . '] Tainacan documento set → attachment ' . $documento_id . ' (' . $documento_kind . ')');
+                    } else {
+                        $errs = $item->get_errors();
+                        $msg = is_array($errs) ? json_encode($errs) : (string) $errs;
+                        $errors[] = 'set_document validation failed: ' . $msg;
+                        $this->log_if($import_id, 'WARN', 'bitstream.document_invalid',
+                            '[' . $oai_identifier . '] Tainacan rejected documento update: ' . $msg);
+                    }
                 }
             } catch (\Throwable $e) {
                 $errors[] = 'set_document: ' . $e->getMessage();
@@ -1439,8 +1449,88 @@ class Importer {
         } else {
             $this->log_if($import_id, 'INFO', 'bitstream.html_empty',
                 '[' . $oai_identifier . '] Handle page parsed but no bitstream links matched');
+            return $bitstreams;
         }
+
+        // DSpace pages typically only inline THUMBNAILs (.jpg.jpg) — the ORIGINAL
+        // bitstreams (.jpg) aren't linked from the public page in some themes.
+        // Probe via HEAD: for every THUMBNAIL we found, try url-stripped of one
+        // .jpg extension under a few sequence variants. If any 200-OKs back as
+        // an image bigger than the thumbnail, attach it as ORIGINAL.
+        $has_original = false;
+        foreach ($bitstreams as $bs) {
+            if (($bs['bundle'] ?? '') === 'ORIGINAL') { $has_original = true; break; }
+        }
+        if (!$has_original) {
+            $this->log_if($import_id, 'INFO', 'bitstream.probing',
+                '[' . $oai_identifier . '] Only THUMBNAILs in HTML — probing for ORIGINAL versions');
+            $sslverify = (bool) Settings::get('importer_sslverify', true);
+            $extra = [];
+            foreach ($bitstreams as $bs) {
+                if (($bs['bundle'] ?? '') !== 'THUMBNAIL') continue;
+                $found = $this->probe_dspace_original($bs['url'], $sslverify, $import_id, $oai_identifier);
+                if ($found) $extra[] = $found;
+            }
+            if (!empty($extra)) $bitstreams = array_merge($bitstreams, $extra);
+        }
+
         return $bitstreams;
+    }
+
+    /**
+     * For a DSpace THUMBNAIL URL like
+     *   /bitstream/handle/H/foo.jpg.jpg?sequence=15&isAllowed=y
+     * try the matching ORIGINAL at
+     *   /bitstream/handle/H/foo.jpg            (no query string)
+     *
+     * DSpace resolves bitstreams by FILENAME when no sequence is supplied,
+     * so this always serves the correct ORIGINAL (verified empirically against
+     * DAMI). We deliberately AVOID guessing sequence numbers because the
+     * filename in the URL is decorative — DSpace looks up by sequence first
+     * and ignores the URL filename, so a wrong sequence guess could attach a
+     * DIFFERENT item's original under this thumbnail's name.
+     */
+    private function probe_dspace_original(string $thumb_url, bool $sslverify, ?int $import_id, string $oai_identifier): ?array {
+        // Strip exactly one trailing .jpg
+        $stripped = preg_replace('/\.jpg\.jpg(\?|$)/i', '.jpg$1', $thumb_url, 1, $count);
+        if (!$count) return null;
+
+        // Drop the query string — without ?sequence=, DSpace matches by filename
+        $candidate = preg_replace('/\?.*$/', '', $stripped);
+
+        $head = wp_remote_head($candidate, [
+            'timeout' => 10,
+            'sslverify' => $sslverify,
+            'redirection' => 3,
+        ]);
+        if (is_wp_error($head)) {
+            $this->log_if($import_id, 'INFO', 'bitstream.probe_failed',
+                '[' . $oai_identifier . '] HEAD ' . $candidate . ' → ' . $head->get_error_message());
+            return null;
+        }
+        $code = wp_remote_retrieve_response_code($head);
+        if ($code !== 200) {
+            $this->log_if($import_id, 'INFO', 'bitstream.probe_no_match',
+                '[' . $oai_identifier . '] HEAD ' . $candidate . ' → HTTP ' . $code);
+            return null;
+        }
+        $type = (string) wp_remote_retrieve_header($head, 'content-type');
+        if (stripos($type, 'image/') !== 0) {
+            $this->log_if($import_id, 'INFO', 'bitstream.probe_not_image',
+                '[' . $oai_identifier . '] HEAD ' . $candidate . ' → ' . $type);
+            return null;
+        }
+        $cl = (int) wp_remote_retrieve_header($head, 'content-length');
+
+        $this->log_if($import_id, 'INFO', 'bitstream.probed_original',
+            '[' . $oai_identifier . '] Found ORIGINAL via probe: ' . $candidate
+            . ($cl > 0 ? ' (' . round($cl / 1048576, 2) . ' MB)' : '') . ', ' . $type);
+        return [
+            'url' => $candidate,
+            'mime' => trim(explode(';', $type)[0]),
+            'size' => $cl,
+            'bundle' => 'ORIGINAL',
+        ];
     }
 
     /**
