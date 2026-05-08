@@ -205,6 +205,7 @@ class Plugin extends \Tainacan\Pages {
             'tainacan_oai_count_import_items',
             'tainacan_oai_delete_import',
             'tainacan_oai_fetch_metadata_formats',
+            'tainacan_oai_stop_import',
         ];
 
         foreach ($handlers as $action) {
@@ -394,6 +395,24 @@ class Plugin extends \Tainacan\Pages {
         $result = $this->importer->process_batch($import_id, 10);
         if (is_wp_error($result)) wp_send_json_error(['message' => $result->get_error_message()]);
         wp_send_json_success($result);
+    }
+
+    /**
+     * Cooperative cancellation: marks the import row as 'cancelled'. The
+     * running process_batch (if any) checks the status every 5 records and
+     * exits gracefully; new batches refuse to start. Items already imported
+     * are not rolled back.
+     */
+    public function ajax_stop_import() {
+        $this->authorize_ajax();
+        global $wpdb;
+        $import_id = absint($_POST['import_id'] ?? 0);
+        if (!$import_id) wp_send_json_error(['message' => __('Invalid import ID.', 'tainacan-oai-pmh')]);
+        $table = $wpdb->prefix . 'tainacan_oai_imports';
+        $wpdb->update($table, ['status' => 'cancelled'], ['id' => $import_id]);
+        wp_send_json_success([
+            'message' => __('Stop requested. The current batch will finish and no new batch will start.', 'tainacan-oai-pmh'),
+        ]);
     }
 
     public function ajax_get_collection_metadata() {

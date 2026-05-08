@@ -346,6 +346,11 @@
     color: #721c24;
 }
 
+.oai-badge-cancelled {
+    background: #e2e3e5;
+    color: #495057;
+}
+
 /* Empty State */
 .oai-empty {
     text-align: center;

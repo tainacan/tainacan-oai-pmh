@@ -38,9 +38,13 @@
             $('#btn-fetch-repository').on('click', this.fetchRepository.bind(this));
             $('#btn-preview-records').on('click', this.previewRecords.bind(this));
             $('#btn-start-import').on('click', this.startImport.bind(this));
+            $('#btn-stop-import').on('click', this.stopImport.bind(this));
             $('#btn-next-step').on('click', this.nextStep.bind(this));
             $('#btn-prev-step').on('click', this.prevStep.bind(this));
             $('#target-collection').on('change', this.onCollectionChange.bind(this));
+
+            // Restore wizard state from previous session if reasonably fresh
+            this.restoreWizardState();
 
             // Harvest sources (scheduled)
             $('#btn-new-harvest-source').on('click', this.openHarvestModal.bind(this, null));
@@ -244,6 +248,7 @@
                     TainacanOAI.fetchSets(url);
                     TainacanOAI.fetchMetadataFormats(url);
                     $('#btn-next-step').show();
+                    TainacanOAI.saveWizardState();
                 })
                 .fail(function () { TainacanOAI.notice('error', tainacanOAI.strings.error); })
                 .always(function () { TainacanOAI.setLoading($btn, false); });
@@ -288,7 +293,10 @@
                         // Invalidate any preview already done with the old format
                         TainacanOAI.importData.preview = null;
                         TainacanOAI.importData.dc_fields = [];
+                        TainacanOAI.saveWizardState();
                     });
+
+                    TainacanOAI.saveWizardState();
                 });
         },
 
@@ -462,6 +470,7 @@
                 }
                 TainacanOAI.importData.import_id = response.data.import_id;
                 $('#import-progress').show();
+                $('#btn-stop-import').show().prop('disabled', false).text('Stop import');
                 TainacanOAI.processImport();
             }).fail(function () {
                 TainacanOAI.notice('error', tainacanOAI.strings.error);
@@ -481,6 +490,7 @@
                         } else {
                             TainacanOAI.notice('error', TainacanOAI.errorMessage(response));
                             TainacanOAI.setLoading($('#btn-start-import'), false);
+                            $('#btn-stop-import').hide();
                         }
                         return;
                     }
@@ -499,11 +509,22 @@
                         ' (Failed: ' + data.failed + ', Skipped: ' + (data.skipped || 0) + ')'
                     );
 
+                    // Server-side cancellation took effect — stop polling
+                    if (data.status === 'cancelled') {
+                        TainacanOAI.notice('warning', 'Import cancelled. ' + data.total_imported + ' item(s) already imported are preserved.');
+                        TainacanOAI.setLoading($('#btn-start-import'), false);
+                        $('#btn-stop-import').hide();
+                        TainacanOAI.clearWizardState();
+                        return;
+                    }
+
                     if (data.has_more) {
                         setTimeout(function () { TainacanOAI.processImport(); }, TainacanOAI.pollDelay);
                     } else {
                         TainacanOAI.notice('success', 'Import completed!');
                         TainacanOAI.setLoading($('#btn-start-import'), false);
+                        $('#btn-stop-import').hide();
+                        TainacanOAI.clearWizardState();
                     }
                 })
                 .fail(function () {
@@ -514,8 +535,98 @@
                     } else {
                         TainacanOAI.notice('error', tainacanOAI.strings.error);
                         TainacanOAI.setLoading($('#btn-start-import'), false);
+                        $('#btn-stop-import').hide();
                     }
                 });
+        },
+
+        /**
+         * Cooperative cancellation: marks the import row as 'cancelled' on the
+         * server. The currently-running batch finishes whatever record it's on
+         * (cancellation is checked every 5 records) and the JS poller picks up
+         * the new status on its next response.
+         */
+        stopImport: function (e) {
+            if (e) e.preventDefault();
+            if (!this.importData.import_id) return;
+            if (!confirm('Stop this import? Items already imported will be kept; no new items will be created.')) return;
+
+            const $btn = $('#btn-stop-import');
+            $btn.prop('disabled', true).text('Stopping…');
+
+            this.ajax('tainacan_oai_stop_import', { import_id: this.importData.import_id })
+                .done(function (response) {
+                    if (response.success) {
+                        TainacanOAI.notice('info', response.data.message);
+                    } else {
+                        TainacanOAI.notice('error', TainacanOAI.errorMessage(response));
+                        $btn.prop('disabled', false).text('Stop import');
+                    }
+                })
+                .fail(function () {
+                    $btn.prop('disabled', false).text('Stop import');
+                });
+        },
+
+        // ---------- Wizard state persistence (localStorage) ----------
+
+        WIZARD_STATE_KEY: 'tainacan_oai_wizard_state',
+        WIZARD_STATE_TTL: 3600 * 1000, // 1 hour
+
+        // Snapshot the parts of importData a reload would need to rebuild the
+        // wizard at the same point — without re-fetching the upstream OAI server.
+        // Called after each major transition so a stray reload doesn't cost the
+        // user their format choice + mapping work.
+        saveWizardState: function () {
+            try {
+                const state = {
+                    ts: Date.now(),
+                    source_url: this.importData.source_url || '',
+                    metadata_prefix: this.importData.metadata_prefix || 'oai_dc',
+                    set_spec: $('#source-set').val() || '',
+                    collection_id: this.importData.collection_id || '',
+                    dc_fields: this.importData.dc_fields || [],
+                    repository: this.importData.repository || null,
+                    sets: this.importData.sets || [],
+                    preview_total: this.importData.total || null
+                };
+                localStorage.setItem(this.WIZARD_STATE_KEY, JSON.stringify(state));
+            } catch (e) { /* localStorage may be disabled — non-fatal */ }
+        },
+
+        restoreWizardState: function () {
+            if (!$('#import-wizard').length) return; // not on importer tab
+            let state;
+            try {
+                const raw = localStorage.getItem(this.WIZARD_STATE_KEY);
+                if (!raw) return;
+                state = JSON.parse(raw);
+            } catch (e) { return; }
+
+            if (!state || !state.ts) return;
+            if (Date.now() - state.ts > this.WIZARD_STATE_TTL) {
+                this.clearWizardState();
+                return;
+            }
+
+            // Don't restore values onto fields automatically — the upstream may
+            // have changed and we don't want stale form state. Just keep the
+            // metadata_prefix in importData so when the user reconnects the
+            // dropdown re-selects what they had before.
+            this.importData.metadata_prefix = state.metadata_prefix;
+            this.importData.dc_fields = state.dc_fields || [];
+
+            if (state.source_url) {
+                $('#source-url').val(state.source_url);
+                this.notice('info',
+                    'Resumed wizard state from a previous session. Click "Connect" to refetch the metadata format you had selected (' +
+                    (state.metadata_prefix || 'oai_dc') + ').'
+                );
+            }
+        },
+
+        clearWizardState: function () {
+            try { localStorage.removeItem(this.WIZARD_STATE_KEY); } catch (e) {}
         },
 
         nextStep: function () {

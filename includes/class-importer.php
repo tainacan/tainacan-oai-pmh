@@ -410,6 +410,21 @@ class Importer {
         if (!$import) return new \WP_Error('not_found', __('Import not found.', 'tainacan-oai-pmh'));
         if ($import->status === 'completed') return ['status' => 'completed'];
 
+        // Honor a previously requested cancellation. The "Stop import" button
+        // sets status='cancelled'; we exit cleanly without processing more pages.
+        if ($import->status === 'cancelled') {
+            $this->append_log($import_id, 'INFO', 'import.cancelled',
+                'Run aborted — admin clicked Stop. Already-imported items are preserved.');
+            return [
+                'status' => 'cancelled',
+                'has_more' => false,
+                'total_imported' => (int) $import->imported_records,
+                'total_records' => (int) $import->total_records,
+                'failed' => (int) $import->failed_records,
+                'skipped' => 0,
+            ];
+        }
+
         if ($import->status === 'pending') {
             $wpdb->update($this->table, [
                 'status' => 'processing',
@@ -477,7 +492,14 @@ class Importer {
         $mapping = maybe_unserialize($import->metadata_mapping);
         if (!is_array($mapping)) $mapping = [];
 
-        $imported = 0; $failed = 0; $skipped = 0;
+        $imported = 0; $failed = 0; $skipped = 0; $cancelled_mid = false;
+
+        // In-memory dedup safety net: if the upstream OAI server lists the same
+        // identifier in multiple records of one response (rare but observed in
+        // DSpace with overlapping sets), or if the postmeta tagging on the first
+        // copy hasn't committed by the time we look up the second, we still
+        // catch the duplicate here.
+        $seen_in_batch = [];
 
         // Per-import override (column download_bitstreams) wins over the global
         // setting. NULL/missing → fall back to the global default.
@@ -500,7 +522,19 @@ class Importer {
                 'Bitstream download is DISABLED. Items will be created with metadata only. Toggle "Importer: Download Bitstreams" in Tainacan → Settings → OAI-PMH (or check the wizard option) to enable.');
         }
 
-        foreach ($records as $record) {
+        foreach ($records as $idx => $record) {
+            // Cooperative cancellation: re-check status every 5 records so a
+            // Stop click during a long batch takes effect within seconds.
+            if ($idx > 0 && $idx % 5 === 0) {
+                $cur_status = $wpdb->get_var($wpdb->prepare("SELECT status FROM {$this->table} WHERE id = %d", $import_id));
+                if ($cur_status === 'cancelled') {
+                    $this->append_log($import_id, 'INFO', 'import.cancelled_mid_batch',
+                        sprintf('Stop requested — aborted after %d record(s) in this batch.', $idx));
+                    $cancelled_mid = true;
+                    break;
+                }
+            }
+
             $parsed = $this->parse_record($record, $prefix);
             if (!$parsed) {
                 $failed++;
@@ -512,6 +546,16 @@ class Importer {
                 $this->append_log($import_id, 'INFO', 'record.deleted_upstream', '[' . $parsed['identifier'] . '] Marked deleted upstream — skipped');
                 continue;
             }
+
+            // Already handled in this very batch? Catches upstream-duplicated
+            // records and protects against postmeta-tagging races.
+            if (isset($seen_in_batch[$parsed['identifier']])) {
+                $skipped++;
+                $this->append_log($import_id, 'WARN', 'record.duplicate_in_batch',
+                    '[' . $parsed['identifier'] . '] Already processed earlier in this batch (upstream returned duplicate) — skipped to prevent local duplication');
+                continue;
+            }
+            $seen_in_batch[$parsed['identifier']] = true;
 
             // Deduplicate by OAI identifier within the SAME target collection.
             // Same identifier present in another collection is treated as separate.
@@ -597,6 +641,21 @@ class Importer {
             'resumption_token' => $token !== '' ? $token : null,
         ];
         if ($total > 0) $update['total_records'] = $total;
+
+        // Mid-batch cancellation: persist what we managed to import and stop.
+        if ($cancelled_mid) {
+            $update['status'] = 'cancelled';
+            $update['completed_at'] = gmdate('Y-m-d H:i:s');
+            $wpdb->update($this->table, $update, ['id' => $import_id]);
+            return [
+                'status' => 'cancelled',
+                'has_more' => false,
+                'total_imported' => $cumulative_imported,
+                'total_records' => $total ?: (int) $import->total_records,
+                'failed' => $import->failed_records + $failed,
+                'skipped' => $skipped,
+            ];
+        }
 
         if ($token === '') {
             // OAI servers signal end-of-list with an empty resumptionToken.
@@ -953,14 +1012,29 @@ class Importer {
         }
         $item = $item_repo->insert($item);
 
-        // Persist OAI identifier for deduplication and audit trail
+        // Persist OAI identifier for deduplication and audit trail.
+        // Verify the dedup tag landed — if any meta call silently fails, the
+        // next import would create a duplicate. We retry once and surface the
+        // failure if still missing.
         if ($item && $item->get_id()) {
-            update_post_meta($item->get_id(), '_tainacan_oai_source_id', $record['identifier']);
-            update_post_meta($item->get_id(), '_tainacan_oai_source_datestamp', $record['datestamp']);
-            // Tag the originating import job so admin can later "delete this import"
-            // and remove exactly the items it created (vs. items from other runs).
+            $iid = $item->get_id();
+            update_post_meta($iid, '_tainacan_oai_source_id', $record['identifier']);
+            update_post_meta($iid, '_tainacan_oai_source_datestamp', $record['datestamp']);
             if ($import_id !== null) {
-                update_post_meta($item->get_id(), '_tainacan_oai_import_id', $import_id);
+                update_post_meta($iid, '_tainacan_oai_import_id', $import_id);
+            }
+
+            $verify = get_post_meta($iid, '_tainacan_oai_source_id', true);
+            if ($verify !== $record['identifier']) {
+                update_post_meta($iid, '_tainacan_oai_source_id', $record['identifier']);
+                $verify = get_post_meta($iid, '_tainacan_oai_source_id', true);
+                if ($verify !== $record['identifier']) {
+                    return new \WP_Error(
+                        'dedup_tag_failed',
+                        'Could not persist _tainacan_oai_source_id postmeta on item ' . $iid .
+                        ' — refusing to count as imported to avoid future duplicates'
+                    );
+                }
             }
         }
 

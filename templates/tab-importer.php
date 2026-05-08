@@ -119,6 +119,9 @@ $imports = $data['imports'];
                 <div id="import-progress" style="display:none;">
                     <div class="oai-progress-bar"><div class="oai-progress" id="import-progress-bar" style="width:0%"></div></div>
                     <p id="import-status"></p>
+                    <button type="button" class="button button-link-delete" id="btn-stop-import" style="margin-top:8px;">
+                        <span class="dashicons dashicons-no"></span> <?php esc_html_e('Stop import', 'tainacan-oai-pmh'); ?>
+                    </button>
                 </div>
 
                 <button type="button" class="button button-primary button-hero" id="btn-start-import">
@@ -145,6 +148,7 @@ $imports = $data['imports'];
             <thead><tr>
                 <th><?php esc_html_e('Source', 'tainacan-oai-pmh'); ?></th>
                 <th><?php esc_html_e('Collection', 'tainacan-oai-pmh'); ?></th>
+                <th><?php esc_html_e('Format', 'tainacan-oai-pmh'); ?></th>
                 <th><?php esc_html_e('Status', 'tainacan-oai-pmh'); ?></th>
                 <th><?php esc_html_e('Imported', 'tainacan-oai-pmh'); ?></th>
                 <th><?php esc_html_e('Failed', 'tainacan-oai-pmh'); ?></th>
@@ -162,6 +166,7 @@ $imports = $data['imports'];
                 <tr>
                     <td><?php echo esc_html(wp_parse_url($import->source_url, PHP_URL_HOST)); ?></td>
                     <td><?php echo esc_html($col->get_name()); ?></td>
+                    <td><code style="font-size:11px;"><?php echo esc_html($import->metadata_prefix ?? 'oai_dc'); ?></code></td>
                     <td><span class="oai-badge oai-badge-<?php echo esc_attr($import->status); ?>"><?php echo esc_html(ucfirst($import->status)); ?></span></td>
                     <td><?php echo number_format_i18n($import->imported_records); ?> / <?php echo number_format_i18n($import->total_records); ?></td>
                     <td>
@@ -181,7 +186,7 @@ $imports = $data['imports'];
                 </tr>
                 <?php if ($has_log): ?>
                 <tr class="oai-log-row" id="oai-log-<?php echo esc_attr($import->id); ?>" style="display:none;">
-                    <td colspan="7">
+                    <td colspan="8">
                         <div class="oai-log-toolbar">
                             <strong><?php esc_html_e('Activity log (last 25 entries):', 'tainacan-oai-pmh'); ?></strong>
                             <span class="oai-log-actions">
