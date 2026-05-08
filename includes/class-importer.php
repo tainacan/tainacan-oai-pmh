@@ -553,7 +553,12 @@ class Importer {
         $this->append_log($import_id, 'INFO', 'page.processing',
             sprintf('Entering record loop (%d record(s) in this page)', is_countable($records) ? count($records) : iterator_count($records)));
 
-        foreach ($records as $idx => $record) {
+        // SimpleXML foreach yields the element NAME as key (always 'record'),
+        // not an int — using `$idx => $record` and `$idx % 5` was raising a
+        // PHP 8 TypeError on every record. Use an explicit counter instead.
+        $idx = -1;
+        foreach ($records as $record) {
+            $idx++;
             try {
             // Cooperative cancellation: re-check status every 5 records so a
             // Stop click during a long batch takes effect within seconds.
