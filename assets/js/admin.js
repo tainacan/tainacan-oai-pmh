@@ -405,7 +405,9 @@
                 set_spec: $('#source-set').val(),
                 from_date: $('#from-date').val(),
                 until_date: $('#until-date').val(),
-                metadata_mapping: JSON.stringify(mapping)
+                metadata_mapping: JSON.stringify(mapping),
+                // Per-run override of the global "Download Bitstreams" setting
+                download_bitstreams: $('#import-download-bitstreams').is(':checked') ? 1 : 0
             }).done(function (response) {
                 if (!response.success) {
                     TainacanOAI.notice('error', TainacanOAI.errorMessage(response));

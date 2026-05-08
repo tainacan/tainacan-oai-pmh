@@ -266,6 +266,13 @@ class Importer {
             }
         }
 
+        // Per-import bitstream override: NULL = follow global setting,
+        // 0 = force-disable, 1 = force-enable for this run.
+        $download_bs = null;
+        if (array_key_exists('download_bitstreams', $args) && $args['download_bitstreams'] !== null && $args['download_bitstreams'] !== '') {
+            $download_bs = (int) (bool) $args['download_bitstreams'];
+        }
+
         $wpdb->insert($this->table, [
             'source_url' => $this->normalize_url($args['source_url']),
             'collection_id' => (int) $args['collection_id'],
@@ -273,6 +280,7 @@ class Importer {
             'from_date' => !empty($args['from_date']) ? $args['from_date'] : null,
             'until_date' => !empty($args['until_date']) ? $args['until_date'] : null,
             'metadata_mapping' => maybe_serialize($args['metadata_mapping'] ?? []),
+            'download_bitstreams' => $download_bs,
             'status' => 'pending',
             'created_at' => gmdate('Y-m-d H:i:s'),
         ]);
@@ -356,7 +364,26 @@ class Importer {
 
         $imported = 0; $failed = 0; $skipped = 0;
 
-        $bitstreams_enabled = (bool) Settings::get('import_bitstreams', true);
+        // Per-import override (column download_bitstreams) wins over the global
+        // setting. NULL/missing → fall back to the global default.
+        $per_import_override = isset($import->download_bitstreams) ? (int) $import->download_bitstreams : null;
+        if ($per_import_override === 1) {
+            $bitstreams_enabled = true;
+        } elseif ($per_import_override === 0) {
+            $bitstreams_enabled = false;
+        } else {
+            $bitstreams_enabled = (bool) Settings::get('import_bitstreams', true);
+        }
+
+        // Make the resolved decision visible — silent skipping was the source of
+        // many "imported but no images" surprises.
+        if ($bitstreams_enabled) {
+            $this->append_log($import_id, 'INFO', 'config',
+                'Bitstream download is ENABLED. Will try ORE → METS → xOAI for each item.');
+        } else {
+            $this->append_log($import_id, 'INFO', 'config',
+                'Bitstream download is DISABLED. Items will be created with metadata only. Toggle "Importer: Download Bitstreams" in Tainacan → Settings → OAI-PMH (or check the wizard option) to enable.');
+        }
 
         foreach ($records as $record) {
             $parsed = $this->parse_record($record);
@@ -901,6 +928,13 @@ class Importer {
             $bitstreams = $this->fetch_mets_bitstreams($source_url, $oai_identifier, $import_id);
         }
 
+        // Final fallback: xOAI is DSpace's native format and exposes bitstreams
+        // via <element name="bundles"> structure even when ORE/METS are stingy.
+        if (empty($bitstreams) && !is_wp_error($bitstreams)) {
+            $this->log_if($import_id, 'INFO', 'bitstream.fallback', '[' . $oai_identifier . '] METS also empty, trying xOAI (DSpace native)');
+            $bitstreams = $this->fetch_xoai_bitstreams($source_url, $oai_identifier, $import_id);
+        }
+
         if (is_wp_error($bitstreams)) {
             $this->log_if($import_id, 'WARN', 'bitstream.fetch_failed', '[' . $oai_identifier . '] ' . $bitstreams->get_error_message());
             return $errors;
@@ -1109,6 +1143,78 @@ class Importer {
                         'bundle' => strtoupper($bundle) === 'THUMBNAIL' ? 'THUMBNAIL' : 'ORIGINAL',
                     ];
                 }
+            }
+        }
+        return $bitstreams;
+    }
+
+    /**
+     * Third-tier fallback via DSpace's native xOAI format.
+     *
+     * xOAI structure (Lyncode):
+     *   <doc xmlns="http://www.lyncode.com/xoai">
+     *     <element name="bundles">
+     *       <element name="bundle">
+     *         <field name="name">ORIGINAL</field>
+     *         <element name="bitstreams">
+     *           <element name="bitstream">
+     *             <field name="url">https://…/bitstream/handle/…</field>
+     *             <field name="format">image/jpeg</field>
+     *             <field name="size">12345</field>
+     *           </element>
+     *           …
+     *         </element>
+     *       </element>
+     *     </element>
+     *   </doc>
+     */
+    private function fetch_xoai_bitstreams(string $source_url, string $oai_identifier, ?int $import_id = null) {
+        if ($oai_identifier === '') return [];
+
+        $url = $source_url . '?verb=GetRecord&metadataPrefix=xoai&identifier=' . urlencode($oai_identifier);
+        $response = $this->request($url);
+        if (is_wp_error($response)) {
+            $this->log_if($import_id, 'WARN', 'bitstream.xoai_request_failed',
+                '[' . $oai_identifier . '] xOAI GetRecord failed: ' . $response->get_error_message());
+            return [];
+        }
+
+        $xml = $this->parse_xml($response);
+        if (is_wp_error($xml)) return [];
+        if (isset($xml->error)) {
+            $this->log_if($import_id, 'INFO', 'bitstream.xoai_unsupported',
+                '[' . $oai_identifier . '] xOAI error: ' . (string) $xml->error['code']);
+            return [];
+        }
+
+        $XOAI_NS = 'http://www.lyncode.com/xoai';
+        $xml->registerXPathNamespace('x', $XOAI_NS);
+
+        $bitstreams = [];
+        // Find every <element name="bundle"> regardless of nesting depth
+        $bundles = $xml->xpath("//x:element[@name='bundle']") ?: [];
+        foreach ($bundles as $bundle) {
+            // Bundle's name field tells us ORIGINAL vs THUMBNAIL vs LICENSE etc
+            $bundle_name_nodes = $bundle->xpath("./x:field[@name='name']");
+            $bundle_name = $bundle_name_nodes ? trim((string) $bundle_name_nodes[0]) : 'ORIGINAL';
+            if (!in_array(strtoupper($bundle_name), ['ORIGINAL', 'THUMBNAIL'], true)) continue;
+
+            $bs_nodes = $bundle->xpath(".//x:element[@name='bitstream']") ?: [];
+            foreach ($bs_nodes as $bs) {
+                $url_nodes = $bs->xpath("./x:field[@name='url']");
+                if (!$url_nodes) continue;
+                $href = trim((string) $url_nodes[0]);
+                if ($href === '') continue;
+
+                $fmt_nodes = $bs->xpath("./x:field[@name='format']");
+                $size_nodes = $bs->xpath("./x:field[@name='size']");
+
+                $bitstreams[] = [
+                    'url' => $href,
+                    'mime' => $fmt_nodes ? trim((string) $fmt_nodes[0]) : '',
+                    'size' => $size_nodes ? (int) trim((string) $size_nodes[0]) : 0,
+                    'bundle' => strtoupper($bundle_name) === 'THUMBNAIL' ? 'THUMBNAIL' : 'ORIGINAL',
+                ];
             }
         }
         return $bitstreams;

@@ -354,6 +354,12 @@ class Plugin extends \Tainacan\Pages {
         $mapping = $mapping_raw !== '' ? json_decode($mapping_raw, true) : [];
         if (!is_array($mapping)) $mapping = [];
 
+        // Wizard checkbox; absent → null (follow global setting), '0'/'1' → explicit override
+        $bs_override = null;
+        if (isset($_POST['download_bitstreams']) && $_POST['download_bitstreams'] !== '') {
+            $bs_override = !empty($_POST['download_bitstreams']) ? 1 : 0;
+        }
+
         $args = [
             'source_url' => esc_url_raw(wp_unslash($_POST['source_url'] ?? '')),
             'collection_id' => absint($_POST['collection_id'] ?? 0),
@@ -361,6 +367,7 @@ class Plugin extends \Tainacan\Pages {
             'from_date' => sanitize_text_field(wp_unslash($_POST['from_date'] ?? '')),
             'until_date' => sanitize_text_field(wp_unslash($_POST['until_date'] ?? '')),
             'metadata_mapping' => $mapping,
+            'download_bitstreams' => $bs_override,
         ];
 
         $import_id = $this->importer->create_import($args);

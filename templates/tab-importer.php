@@ -96,11 +96,21 @@ $imports = $data['imports'];
                     <p><strong><?php esc_html_e('Records:', 'tainacan-oai-pmh'); ?></strong> <span id="summary-count"></span></p>
                 </div>
                 
+                <div class="oai-form-group">
+                    <label>
+                        <input type="checkbox" id="import-download-bitstreams" checked>
+                        <?php esc_html_e('Download bitstreams (DSpace ORE/METS/xOAI)', 'tainacan-oai-pmh'); ?>
+                    </label>
+                    <p class="description">
+                        <?php esc_html_e('Overrides the global "Download Bitstreams" setting for this run only. Uncheck to import metadata only.', 'tainacan-oai-pmh'); ?>
+                    </p>
+                </div>
+
                 <div id="import-progress" style="display:none;">
                     <div class="oai-progress-bar"><div class="oai-progress" id="import-progress-bar" style="width:0%"></div></div>
                     <p id="import-status"></p>
                 </div>
-                
+
                 <button type="button" class="button button-primary button-hero" id="btn-start-import">
                     <span class="dashicons dashicons-download"></span> <?php esc_html_e('Start Import', 'tainacan-oai-pmh'); ?>
                 </button>
