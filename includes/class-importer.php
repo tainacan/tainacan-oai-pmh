@@ -935,6 +935,14 @@ class Importer {
             $bitstreams = $this->fetch_xoai_bitstreams($source_url, $oai_identifier, $import_id);
         }
 
+        // Last-resort: scrape the public DSpace handle page when ALL OAI formats
+        // come back empty. Some DSpace deployments don't list bitstreams in OAI
+        // for permissions or config reasons even though the public web shows them.
+        if (empty($bitstreams) && !is_wp_error($bitstreams)) {
+            $this->log_if($import_id, 'INFO', 'bitstream.fallback', '[' . $oai_identifier . '] All OAI formats empty, scraping DSpace handle page');
+            $bitstreams = $this->fetch_html_bitstreams($source_url, $oai_identifier, $import_id);
+        }
+
         if (is_wp_error($bitstreams)) {
             $this->log_if($import_id, 'WARN', 'bitstream.fetch_failed', '[' . $oai_identifier . '] ' . $bitstreams->get_error_message());
             return $errors;
@@ -1216,6 +1224,111 @@ class Importer {
                     'bundle' => strtoupper($bundle_name) === 'THUMBNAIL' ? 'THUMBNAIL' : 'ORIGINAL',
                 ];
             }
+        }
+        return $bitstreams;
+    }
+
+    /**
+     * Last-resort fallback: scrape the public DSpace handle page HTML for
+     * bitstream URLs. Used when ORE/METS/xOAI all come back empty — some
+     * DSpace deployments suppress bitstream listings in OAI-PMH (permissions,
+     * config, item-level overrides) even though the public website renders
+     * them just fine.
+     *
+     * Strategy:
+     *   1. Extract handle from `oai:HOST:HANDLE` (e.g. `acervo/9981`)
+     *   2. Derive site base URL from the OAI source_url
+     *   3. GET `<base>/handle/<handle>` HTML
+     *   4. Regex out every href containing `/bitstream/handle/<handle>/`
+     *   5. Classify ORIGINAL vs THUMBNAIL by the .jpg.jpg double-extension
+     *      DSpace uses for auto-generated thumbnails
+     *
+     * Less precise than OAI parsing — but robust against missing OAI metadata.
+     */
+    private function fetch_html_bitstreams(string $source_url, string $oai_identifier, ?int $import_id = null): array {
+        if ($oai_identifier === '') return [];
+
+        // Extract handle: oai:HOST:HANDLE → HANDLE
+        if (!preg_match('/^oai:[^:]+:(.+)$/', $oai_identifier, $m)) {
+            $this->log_if($import_id, 'WARN', 'bitstream.html_no_handle',
+                '[' . $oai_identifier . '] Could not extract handle from identifier');
+            return [];
+        }
+        $handle = $m[1];
+
+        // Build site base from source_url
+        $parts = wp_parse_url($source_url);
+        if (!$parts || empty($parts['host'])) return [];
+        $base = ($parts['scheme'] ?? 'https') . '://' . $parts['host'] . (!empty($parts['port']) ? ':' . $parts['port'] : '');
+        $handle_url = $base . '/handle/' . $handle;
+
+        $this->log_if($import_id, 'INFO', 'bitstream.html_fetch',
+            '[' . $oai_identifier . '] GET ' . $handle_url);
+
+        $sslverify = (bool) Settings::get('importer_sslverify', true);
+        $response = wp_remote_get($handle_url, [
+            'timeout' => 30,
+            'sslverify' => $sslverify,
+            'redirection' => 3,
+            'headers' => ['User-Agent' => 'Tainacan-OAI-PMH-Importer/' . TAINACAN_OAI_PMH_VERSION],
+        ]);
+
+        if (is_wp_error($response)) {
+            $this->log_if($import_id, 'WARN', 'bitstream.html_failed',
+                '[' . $oai_identifier . '] Handle page fetch failed: ' . $response->get_error_message());
+            return [];
+        }
+        $code = wp_remote_retrieve_response_code($response);
+        if ($code !== 200) {
+            $this->log_if($import_id, 'WARN', 'bitstream.html_failed',
+                '[' . $oai_identifier . '] Handle page returned HTTP ' . $code);
+            return [];
+        }
+
+        $html = wp_remote_retrieve_body($response);
+        $bitstreams = [];
+        $seen = [];
+
+        // Match every href / src that points at a bitstream of THIS handle.
+        // Pattern: ".../bitstream/handle/<handle>/<filename>?<query>"
+        $handle_quoted = preg_quote('/bitstream/handle/' . $handle . '/', '#');
+        if (preg_match_all('#(?:href|src)\s*=\s*["\']([^"\']*' . $handle_quoted . '[^"\']+)["\']#i', $html, $matches)) {
+            foreach ($matches[1] as $raw) {
+                // Normalize: relative → absolute
+                $href = $raw;
+                if (strpos($href, 'http') !== 0) {
+                    $href = $base . (str_starts_with($href, '/') ? $href : '/' . $href);
+                }
+                if (isset($seen[$href])) continue;
+                $seen[$href] = true;
+
+                $path = strtolower(wp_parse_url($href, PHP_URL_PATH) ?? '');
+                // DSpace generates thumbnails as <name>.jpg.jpg in the THUMBNAIL bundle
+                $is_thumbnail = (bool) preg_match('/\.jpg\.jpg$/', $path);
+
+                $mime = 'application/octet-stream';
+                if (preg_match('/\.(jpe?g)(\.jpg)?$/', $path)) $mime = 'image/jpeg';
+                elseif (str_ends_with($path, '.png')) $mime = 'image/png';
+                elseif (str_ends_with($path, '.gif')) $mime = 'image/gif';
+                elseif (str_ends_with($path, '.pdf')) $mime = 'application/pdf';
+                elseif (preg_match('/\.tiff?$/', $path)) $mime = 'image/tiff';
+                elseif (str_ends_with($path, '.webp')) $mime = 'image/webp';
+
+                $bitstreams[] = [
+                    'url' => $href,
+                    'mime' => $mime,
+                    'size' => 0,
+                    'bundle' => $is_thumbnail ? 'THUMBNAIL' : 'ORIGINAL',
+                ];
+            }
+        }
+
+        if (!empty($bitstreams)) {
+            $this->log_if($import_id, 'INFO', 'bitstream.html_found',
+                '[' . $oai_identifier . '] HTML scrape found ' . count($bitstreams) . ' bitstream(s)');
+        } else {
+            $this->log_if($import_id, 'INFO', 'bitstream.html_empty',
+                '[' . $oai_identifier . '] Handle page parsed but no bitstream links matched');
         }
         return $bitstreams;
     }
