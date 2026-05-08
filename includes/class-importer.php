@@ -371,8 +371,9 @@ class Importer {
                 continue;
             }
 
-            // Deduplicate by OAI identifier — find existing item if previously imported
-            $existing = $this->find_item_by_oai_identifier($parsed['identifier']);
+            // Deduplicate by OAI identifier within the SAME target collection.
+            // Same identifier present in another collection is treated as separate.
+            $existing = $this->find_item_by_oai_identifier($parsed['identifier'], (int) $import->collection_id);
             if ($existing) {
                 $had_bs = $this->item_has_oai_bitstreams($existing);
                 if ($bitstreams_enabled && !$had_bs) {
@@ -395,7 +396,7 @@ class Importer {
             // Restore it instead of creating a duplicate: untrash the post,
             // un-trash its attachments, refresh metadata, optionally re-fetch
             // bitstreams. Counts as "imported" in the run summary.
-            $trashed = $this->find_trashed_item_by_oai_identifier($parsed['identifier']);
+            $trashed = $this->find_trashed_item_by_oai_identifier($parsed['identifier'], (int) $import->collection_id);
             if ($trashed) {
                 wp_untrash_post($trashed);
                 wp_update_post(['ID' => $trashed, 'post_status' => 'publish']);
@@ -423,6 +424,17 @@ class Importer {
             } else {
                 $imported++;
                 $this->append_log($import_id, 'INFO', 'record.created', '[' . $parsed['identifier'] . '] Created item ' . (int) $result);
+
+                // Heads-up if the same OAI identifier is already imported elsewhere
+                $other = $this->find_oai_id_in_other_collections($parsed['identifier'], (int) $import->collection_id);
+                if (!empty($other)) {
+                    $other_summary = array_map(fn($o) => 'item ' . $o['id'] . ' (collection ' . $o['collection_id'] . ')', $other);
+                    $this->append_log(
+                        $import_id, 'INFO', 'record.duplicate_other_collection',
+                        '[' . $parsed['identifier'] . '] Same OAI identifier already exists in another collection: ' . implode(', ', $other_summary)
+                    );
+                }
+
                 if ($bitstreams_enabled) {
                     $bs_errors = $this->enrich_item_with_bitstreams((int) $result, $parsed['identifier'], $import->source_url);
                     foreach ($bs_errors as $bs_err) {
@@ -558,7 +570,7 @@ class Importer {
                     $stats['last_datestamp'] = $parsed['datestamp'];
                 }
 
-                $existing = $this->find_item_by_oai_identifier($parsed['identifier']);
+                $existing = $this->find_item_by_oai_identifier($parsed['identifier'], $collection_id);
 
                 // Tombstone: upstream tells us this record was deleted
                 if ($parsed['status'] === 'deleted') {
@@ -595,7 +607,7 @@ class Importer {
                 }
 
                 // Restore-from-trash path (counts as updated in scheduled-harvest stats)
-                $trashed = $this->find_trashed_item_by_oai_identifier($parsed['identifier']);
+                $trashed = $this->find_trashed_item_by_oai_identifier($parsed['identifier'], $collection_id);
                 if ($trashed) {
                     wp_untrash_post($trashed);
                     wp_update_post(['ID' => $trashed, 'post_status' => 'publish']);
@@ -675,36 +687,76 @@ class Importer {
      * OAI identifier. Trashed/auto-draft posts are deliberately excluded so
      * a previous "Delete import" doesn't pollute the dedup check — those go
      * through find_trashed_item_by_oai_identifier() and get restored instead.
+     *
+     * Scope-by-collection: Tainacan items live under post_type
+     * `tnc_col_<id>_item`, so passing $collection_id constrains the lookup
+     * to that exact collection. Without it, the same OAI identifier in two
+     * collections would dedup-match the first one we find, causing imports
+     * targeted at collection B to silently update items in collection A.
      */
-    private function find_item_by_oai_identifier(string $oai_identifier): ?int {
+    private function find_item_by_oai_identifier(string $oai_identifier, ?int $collection_id = null): ?int {
         if ($oai_identifier === '') return null;
         global $wpdb;
-        $found = $wpdb->get_var($wpdb->prepare(
-            "SELECT pm.post_id FROM {$wpdb->postmeta} pm
-             JOIN {$wpdb->posts} p ON p.ID = pm.post_id
-             WHERE pm.meta_key = %s AND pm.meta_value = %s
-               AND p.post_status NOT IN ('trash', 'auto-draft')
-             LIMIT 1",
-            '_tainacan_oai_source_id',
-            $oai_identifier
-        ));
+        $sql = "SELECT pm.post_id FROM {$wpdb->postmeta} pm
+                JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+                WHERE pm.meta_key = %s AND pm.meta_value = %s
+                  AND p.post_status NOT IN ('trash', 'auto-draft')";
+        $args = ['_tainacan_oai_source_id', $oai_identifier];
+        if ($collection_id !== null && $collection_id > 0) {
+            $sql .= " AND p.post_type = %s";
+            $args[] = 'tnc_col_' . (int) $collection_id . '_item';
+        }
+        $sql .= " LIMIT 1";
+        $found = $wpdb->get_var($wpdb->prepare($sql, $args));
         return $found ? (int) $found : null;
     }
 
     /** Counterpart of find_item_by_oai_identifier scoped to trashed items only. */
-    private function find_trashed_item_by_oai_identifier(string $oai_identifier): ?int {
+    private function find_trashed_item_by_oai_identifier(string $oai_identifier, ?int $collection_id = null): ?int {
         if ($oai_identifier === '') return null;
         global $wpdb;
-        $found = $wpdb->get_var($wpdb->prepare(
-            "SELECT pm.post_id FROM {$wpdb->postmeta} pm
+        $sql = "SELECT pm.post_id FROM {$wpdb->postmeta} pm
+                JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+                WHERE pm.meta_key = %s AND pm.meta_value = %s
+                  AND p.post_status = 'trash'";
+        $args = ['_tainacan_oai_source_id', $oai_identifier];
+        if ($collection_id !== null && $collection_id > 0) {
+            $sql .= " AND p.post_type = %s";
+            $args[] = 'tnc_col_' . (int) $collection_id . '_item';
+        }
+        $sql .= " LIMIT 1";
+        $found = $wpdb->get_var($wpdb->prepare($sql, $args));
+        return $found ? (int) $found : null;
+    }
+
+    /**
+     * Returns active item IDs for the same OAI identifier in *other* collections,
+     * for informational logging only. Helps admins notice that the same source
+     * record was previously imported elsewhere.
+     */
+    private function find_oai_id_in_other_collections(string $oai_identifier, int $exclude_collection_id): array {
+        if ($oai_identifier === '') return [];
+        global $wpdb;
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT pm.post_id, p.post_type FROM {$wpdb->postmeta} pm
              JOIN {$wpdb->posts} p ON p.ID = pm.post_id
              WHERE pm.meta_key = %s AND pm.meta_value = %s
-               AND p.post_status = 'trash'
-             LIMIT 1",
+               AND p.post_type LIKE %s
+               AND p.post_type <> %s
+               AND p.post_status NOT IN ('trash', 'auto-draft')",
             '_tainacan_oai_source_id',
-            $oai_identifier
+            $oai_identifier,
+            'tnc_col_%_item',
+            'tnc_col_' . $exclude_collection_id . '_item'
         ));
-        return $found ? (int) $found : null;
+        $out = [];
+        foreach ($rows as $r) {
+            // post_type "tnc_col_123_item" → 123
+            if (preg_match('/^tnc_col_(\d+)_item$/', $r->post_type, $m)) {
+                $out[] = ['id' => (int) $r->post_id, 'collection_id' => (int) $m[1]];
+            }
+        }
+        return $out;
     }
 
     /** Restores trashed bitstream attachments belonging to the given item. */
