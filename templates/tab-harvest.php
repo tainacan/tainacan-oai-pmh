@@ -79,15 +79,17 @@ $schedule_labels = [
                         <small>
                             <?php
                             /* translators: 1: items created, 2: items updated, 3: items deleted */
+                            $oai_counter_format = __('+%1$d / ~%2$d / -%3$d', 'tainacan-oai-pmh');
                             echo esc_html(sprintf(
-                                __('+%1$d / ~%2$d / -%3$d', 'tainacan-oai-pmh'),
+                                $oai_counter_format,
                                 (int) $s->items_created, (int) $s->items_updated, (int) $s->items_deleted
                             ));
                             ?>
                             <?php if ((int) $s->items_failed > 0): ?>
                                 <br><span style="color:#d63638;"><?php
                                     /* translators: %d: number of failed items */
-                                    echo esc_html(sprintf(__('%d failed', 'tainacan-oai-pmh'), (int) $s->items_failed));
+                                    $oai_failed_format = __('%d failed', 'tainacan-oai-pmh');
+                                    echo esc_html(sprintf($oai_failed_format, (int) $s->items_failed));
                                 ?></span>
                             <?php endif; ?>
                         </small>

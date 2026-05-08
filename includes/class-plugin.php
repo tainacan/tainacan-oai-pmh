@@ -10,11 +10,18 @@
  *  - We also read $_POST without explicit unslash() in places where we then
  *    apply esc_url_raw / sanitize_text_field / absint / json_decode, all of
  *    which handle escape/sanitize. Those checks are explicit suppressions.
+ *  - A handful of AJAX handlers do direct $wpdb writes against the plugin's
+ *    custom imports table (status flips on Stop, log fetches). Those use a
+ *    local $table variable composed from $wpdb->prefix, never user input.
  *
  * phpcs:disable WordPress.Security.NonceVerification.Missing
  * phpcs:disable WordPress.Security.NonceVerification.Recommended
  * phpcs:disable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
  * phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound
+ * phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery
+ * phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching
+ * phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+ * phpcs:disable PluginCheck.Security.DirectDB.UnescapedDBParameter
  */
 namespace Tainacan_OAI_PMH;
 

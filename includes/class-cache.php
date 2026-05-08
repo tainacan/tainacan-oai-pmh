@@ -6,10 +6,16 @@
  *    so direct $wpdb usage is required.
  *  - Table names are interpolated from $this->table (set once in __construct
  *    from $wpdb->prefix), never user input.
+ *  - $sql is built locally from %s/%d placeholders + the trusted table name,
+ *    then passed through $wpdb->prepare() at the call site. PHPCS doesn't
+ *    track variable taint into $wpdb->get_*() and flags the variable usage.
  *
  * phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery
  * phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching
  * phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+ * phpcs:disable WordPress.DB.PreparedSQL.NotPrepared
+ * phpcs:disable WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare
+ * phpcs:disable PluginCheck.Security.DirectDB.UnescapedDBParameter
  */
 namespace Tainacan_OAI_PMH;
 

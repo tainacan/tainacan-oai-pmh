@@ -97,8 +97,9 @@ $base_url = $data['base_url'];
                     </strong>
                     <p><?php
                         /* translators: 1: cached items count, 2: total Tainacan items count, 3: sync percentage */
+                        $oai_indexed_format = esc_html__('%1$d of %2$d items indexed (%3$s%%)', 'tainacan-oai-pmh');
                         printf(
-                            esc_html__('%1$d of %2$d items indexed (%3$s%%)', 'tainacan-oai-pmh'),
+                            $oai_indexed_format, // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
                             (int) $index_health['cached_items'],
                             (int) $index_health['wp_items'],
                             esc_html((string) $index_health['sync_percentage'])

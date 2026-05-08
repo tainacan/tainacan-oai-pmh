@@ -1,14 +1,20 @@
 <?php
 /**
  * Plugin Check / phpcs suppressions: imports row + postmeta dedup require
- * direct $wpdb access against custom + WP core tables.
+ * direct $wpdb access against custom + WP core tables. set_time_limit() is
+ * needed because each batch can spawn dozens of HTTP fetches (ORE, METS,
+ * xOAI, REST, HTML, bitstream downloads) and we don't want PHP to timeout
+ * mid-batch.
  *
  * phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery
  * phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching
  * phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+ * phpcs:disable WordPress.DB.PreparedSQL.NotPrepared
  * phpcs:disable WordPress.DB.SlowDBQuery.slow_db_query_meta_key
  * phpcs:disable WordPress.DB.SlowDBQuery.slow_db_query_meta_value
  * phpcs:disable WordPress.PHP.DevelopmentFunctions.error_log_error_log
+ * phpcs:disable PluginCheck.Security.DirectDB.UnescapedDBParameter
+ * phpcs:disable Squiz.PHP.DiscouragedFunctions.Discouraged
  */
 namespace Tainacan_OAI_PMH;
 

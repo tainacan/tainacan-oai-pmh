@@ -1,13 +1,16 @@
 <?php
 /**
  * Plugin Check / phpcs suppressions: this file creates the plugin's custom
- * tables (CREATE TABLE / ALTER TABLE) — that's its entire job.
+ * tables (CREATE TABLE / ALTER TABLE) — that's its entire job. The
+ * $imports_table variable holds the literal table name and is used inside
+ * an ALTER TABLE statement which can't take placeholders.
  *
  * phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery
  * phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching
  * phpcs:disable WordPress.DB.DirectDatabaseQuery.SchemaChange
  * phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
  * phpcs:disable WordPress.DB.PreparedSQL.NotPrepared
+ * phpcs:disable PluginCheck.Security.DirectDB.UnescapedDBParameter
  */
 namespace Tainacan_OAI_PMH;
 
