@@ -965,6 +965,13 @@ class Importer {
             implode(', ', array_map(fn($b) => ($b['bundle'] ?? '?') . ' ' . basename(wp_parse_url($b['url'], PHP_URL_PATH) ?: ''), $bitstreams))
         );
 
+        // Drop THUMBNAIL bundle when at least one ORIGINAL exists. The DSpace
+        // THUMBNAILs are small auto-derivatives — WordPress generates its own
+        // sizes from the ORIGINAL on attachment_id, so keeping the upstream
+        // derivative just clutters Anexos with redundant low-res copies.
+        // When no ORIGINAL is available we keep the THUMBNAILs as visual fallback.
+        $bitstreams = $this->drop_redundant_thumbnails($bitstreams, $oai_identifier, $import_id);
+
         // Process ORIGINALs first so we can promote one before the THUMBNAILs land
         usort($bitstreams, function ($a, $b) {
             $rank = fn($x) => $x['bundle'] === 'ORIGINAL' ? 0 : 1;
@@ -1046,6 +1053,30 @@ class Importer {
         }
 
         return $errors;
+    }
+
+    /**
+     * Removes THUMBNAIL bundle bitstreams from the list when at least one
+     * ORIGINAL is present. WordPress already generates its own thumbnail
+     * sizes (150x150, 300x300, etc.) from any image attachment, so the
+     * upstream DSpace derivatives add no value to the Anexos panel.
+     *
+     * Pass-through when only THUMBNAILs are available (so the item still
+     * gets a miniatura as a last resort).
+     */
+    private function drop_redundant_thumbnails(array $bitstreams, string $oai_identifier, ?int $import_id): array {
+        $originals = 0; $thumbnails = 0;
+        foreach ($bitstreams as $bs) {
+            $b = $bs['bundle'] ?? '';
+            if ($b === 'ORIGINAL') $originals++;
+            elseif ($b === 'THUMBNAIL') $thumbnails++;
+        }
+        if ($originals === 0 || $thumbnails === 0) return $bitstreams;
+
+        $this->log_if($import_id, 'INFO', 'bitstream.skip_thumbnails',
+            '[' . $oai_identifier . '] Dropping ' . $thumbnails . ' THUMBNAIL bitstream(s) — ' . $originals . ' ORIGINAL(s) already available; WordPress will generate its own thumbnail sizes');
+
+        return array_values(array_filter($bitstreams, fn($bs) => ($bs['bundle'] ?? '') !== 'THUMBNAIL'));
     }
 
     /** No-op wrapper: only logs when an import_id was supplied (e.g. from process_batch). */
