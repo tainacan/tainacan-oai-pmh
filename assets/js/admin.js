@@ -242,10 +242,54 @@
                     $('#repository-info').show();
 
                     TainacanOAI.fetchSets(url);
+                    TainacanOAI.fetchMetadataFormats(url);
                     $('#btn-next-step').show();
                 })
                 .fail(function () { TainacanOAI.notice('error', tainacanOAI.strings.error); })
                 .always(function () { TainacanOAI.setLoading($btn, false); });
+        },
+
+        // Pulls supported metadataPrefix values from the upstream and populates
+        // the wizard dropdown. Recommends xoai when present (preserves qualified
+        // DSpace field names) and falls back to oai_dc when nothing else is offered.
+        fetchMetadataFormats: function (url) {
+            this.ajax('tainacan_oai_fetch_metadata_formats', { url: url })
+                .done(function (response) {
+                    if (!response.success) return;
+                    const formats = response.data || [];
+                    const $select = $('#metadata-format');
+                    $select.empty();
+
+                    // Curated descriptions for the formats we know how to parse
+                    const known = {
+                        'oai_dc': 'Unqualified Dublin Core (15 fields, lossy)',
+                        'qdc':    'Qualified Dublin Core (dcterms:* qualifiers preserved)',
+                        'xoai':   'DSpace native (full qualified names like dc.contributor.author) — recommended for DSpace'
+                    };
+
+                    const supported = {};
+                    formats.forEach(function (f) { supported[f.prefix] = f; });
+
+                    // Always offer the three we can parse, marking unsupported ones
+                    ['xoai', 'qdc', 'oai_dc'].forEach(function (k) {
+                        const present = !!supported[k];
+                        const text = k + ' — ' + (known[k] || k) + (present ? '' : ' (not advertised by this server)');
+                        $select.append($('<option>', { value: k, text: text, disabled: !present }));
+                    });
+
+                    // Default: xoai if available (richest), else oai_dc
+                    const def = supported['xoai'] ? 'xoai' : 'oai_dc';
+                    $select.val(def);
+                    TainacanOAI.importData.metadata_prefix = def;
+                    $('#metadata-format-group').show();
+
+                    $select.off('change.oai').on('change.oai', function () {
+                        TainacanOAI.importData.metadata_prefix = $(this).val();
+                        // Invalidate any preview already done with the old format
+                        TainacanOAI.importData.preview = null;
+                        TainacanOAI.importData.dc_fields = [];
+                    });
+                });
         },
 
         fetchSets: function (url) {
@@ -270,7 +314,8 @@
 
             this.ajax('tainacan_oai_preview_records', {
                 url: this.importData.source_url,
-                set: $('#source-set').val()
+                set: $('#source-set').val(),
+                metadata_prefix: this.importData.metadata_prefix || 'oai_dc'
             }).done(function (response) {
                 if (!response.success) {
                     TainacanOAI.notice('error', TainacanOAI.errorMessage(response));
@@ -407,7 +452,8 @@
                 until_date: $('#until-date').val(),
                 metadata_mapping: JSON.stringify(mapping),
                 // Per-run override of the global "Download Bitstreams" setting
-                download_bitstreams: $('#import-download-bitstreams').is(':checked') ? 1 : 0
+                download_bitstreams: $('#import-download-bitstreams').is(':checked') ? 1 : 0,
+                metadata_prefix: this.importData.metadata_prefix || 'oai_dc'
             }).done(function (response) {
                 if (!response.success) {
                     TainacanOAI.notice('error', TainacanOAI.errorMessage(response));

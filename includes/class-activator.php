@@ -72,6 +72,7 @@ class Activator {
             resumption_token TEXT,
             error_log TEXT,
             download_bitstreams TINYINT(1) DEFAULT NULL,
+            metadata_prefix VARCHAR(20) DEFAULT 'oai_dc',
             created_at DATETIME NOT NULL,
             started_at DATETIME,
             completed_at DATETIME,
@@ -79,15 +80,22 @@ class Activator {
             KEY collection_id (collection_id)
         ) $charset");
 
-        // Backfill column for installs created before download_bitstreams existed
-        $col_exists = $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM information_schema.COLUMNS
-             WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND COLUMN_NAME = 'download_bitstreams'",
-            DB_NAME, $wpdb->prefix . 'tainacan_oai_imports'
-        ));
-        if (!$col_exists) {
-            $wpdb->query("ALTER TABLE {$wpdb->prefix}tainacan_oai_imports
-                          ADD COLUMN download_bitstreams TINYINT(1) DEFAULT NULL AFTER error_log");
+        // Backfill columns for installs created before they existed
+        $imports_table = $wpdb->prefix . 'tainacan_oai_imports';
+        foreach (
+            [
+                'download_bitstreams' => "ADD COLUMN download_bitstreams TINYINT(1) DEFAULT NULL AFTER error_log",
+                'metadata_prefix'     => "ADD COLUMN metadata_prefix VARCHAR(20) DEFAULT 'oai_dc' AFTER download_bitstreams",
+            ] as $col => $alter
+        ) {
+            $exists = $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND COLUMN_NAME = %s",
+                DB_NAME, $imports_table, $col
+            ));
+            if (!$exists) {
+                $wpdb->query("ALTER TABLE $imports_table $alter");
+            }
         }
         
         // Tokens table (database-based)

@@ -204,6 +204,7 @@ class Plugin extends \Tainacan\Pages {
             'tainacan_oai_get_harvest_log',
             'tainacan_oai_count_import_items',
             'tainacan_oai_delete_import',
+            'tainacan_oai_fetch_metadata_formats',
         ];
 
         foreach ($handlers as $action) {
@@ -341,9 +342,20 @@ class Plugin extends \Tainacan\Pages {
         $this->authorize_ajax();
         $url = esc_url_raw(wp_unslash($_POST['url'] ?? ''));
         $set = sanitize_text_field(wp_unslash($_POST['set'] ?? ''));
-        $records = $this->importer->preview_records($url, $set, 5);
+        $prefix = sanitize_key(wp_unslash($_POST['metadata_prefix'] ?? 'oai_dc'));
+        $records = $this->importer->preview_records($url, $set, 5, $prefix);
         if (is_wp_error($records)) wp_send_json_error(['message' => $records->get_error_message()]);
         wp_send_json_success($records);
+    }
+
+    /** Lists metadataPrefix values supported by a remote OAI-PMH endpoint. */
+    public function ajax_fetch_metadata_formats() {
+        $this->authorize_ajax();
+        $url = esc_url_raw(wp_unslash($_POST['url'] ?? ''));
+        if (empty($url)) wp_send_json_error(['message' => __('URL is required.', 'tainacan-oai-pmh')]);
+        $formats = $this->importer->fetch_metadata_formats($url);
+        if (is_wp_error($formats)) wp_send_json_error(['message' => $formats->get_error_message()]);
+        wp_send_json_success($formats);
     }
 
     public function ajax_start_import() {
@@ -368,6 +380,7 @@ class Plugin extends \Tainacan\Pages {
             'until_date' => sanitize_text_field(wp_unslash($_POST['until_date'] ?? '')),
             'metadata_mapping' => $mapping,
             'download_bitstreams' => $bs_override,
+            'metadata_prefix' => sanitize_key(wp_unslash($_POST['metadata_prefix'] ?? 'oai_dc')),
         ];
 
         $import_id = $this->importer->create_import($args);

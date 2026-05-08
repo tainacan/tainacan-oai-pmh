@@ -146,7 +146,7 @@ class Importer {
         $count = 0;
         foreach ($record_nodes as $record) {
             if ($count >= $limit) break;
-            $parsed = $this->parse_record($record);
+            $parsed = $this->parse_record($record, $prefix);
             if ($parsed) { $records[] = $parsed; $count++; }
         }
 
@@ -189,7 +189,7 @@ class Importer {
         return array_values($fields);
     }
 
-    private function parse_record(\SimpleXMLElement $record): ?array {
+    private function parse_record(\SimpleXMLElement $record, string $prefix = 'oai_dc'): ?array {
         $header = $record->header ?? null;
         if (!$header) return null;
 
@@ -201,7 +201,6 @@ class Importer {
             'metadata' => [],
         ];
 
-        // header may have multiple setSpec children
         if (isset($header->setSpec)) {
             foreach ($header->setSpec as $ss) {
                 $data['set_specs'][] = (string) $ss;
@@ -211,23 +210,127 @@ class Importer {
         $metadata = $record->metadata ?? null;
         if (!$metadata) return $data;
 
-        // Try oai_dc first; if not present, dump every namespaced child as a field bag.
-        $dc = $metadata->children(self::OAI_DC_NS);
-        if ($dc && $dc->dc) {
-            $dc_elements = $dc->dc->children(self::DC_NS);
-            $this->collect_elements_into($data['metadata'], $dc_elements);
+        // Dispatch by metadataPrefix used to fetch the page. Each format yields
+        // a different "shape" of metadata bag:
+        //   oai_dc → unqualified DC, keys like "title", "creator", "contributor"
+        //   qdc    → qualified DC, keys like "title", "abstract", "isPartOf"
+        //   xoai   → DSpace native, dotted full paths like "dc.contributor.author"
+        $prefix = strtolower($prefix);
+        if ($prefix === 'xoai') {
+            $data['metadata'] = $this->parse_xoai_metadata($metadata);
+        } elseif ($prefix === 'qdc') {
+            $data['metadata'] = $this->parse_qdc_metadata($metadata);
         } else {
-            // fall back: walk every namespace and collect by local name (e.g. qdc, mods)
-            foreach ($metadata->children() as $child) {
-                $this->collect_elements_into($data['metadata'], $child->children());
-                foreach ($child->getDocNamespaces(true) as $prefix => $ns) {
-                    if (!$prefix) continue;
-                    $this->collect_elements_into($data['metadata'], $child->children($ns));
+            // Default: oai_dc + permissive fallback (handles arbitrary schemas
+            // when the upstream answered with something else than expected)
+            $dc = $metadata->children(self::OAI_DC_NS);
+            if ($dc && $dc->dc) {
+                $dc_elements = $dc->dc->children(self::DC_NS);
+                $this->collect_elements_into($data['metadata'], $dc_elements);
+            } else {
+                foreach ($metadata->children() as $child) {
+                    $this->collect_elements_into($data['metadata'], $child->children());
+                    foreach ($child->getDocNamespaces(true) as $p => $ns) {
+                        if (!$p) continue;
+                        $this->collect_elements_into($data['metadata'], $child->children($ns));
+                    }
                 }
             }
         }
 
         return $data;
+    }
+
+    /**
+     * Parses xOAI (Lyncode/DSpace native) into a flat bag with DOTTED qualified
+     * field names. Preserves the full path so the admin sees the actual DSpace
+     * schema in the mapping table.
+     *
+     * Structure:
+     *   <doc:metadata>
+     *     <doc:element name="dc">
+     *       <doc:element name="contributor">
+     *         <doc:element name="author">
+     *           <doc:element name="none">           ← language (none|en|pt-br…)
+     *             <doc:field name="value">…</doc:field>
+     *
+     * Resulting key: "dc.contributor.author"  →  "Author Name"
+     */
+    private function parse_xoai_metadata(\SimpleXMLElement $metadata): array {
+        $XOAI_NS = 'http://www.lyncode.com/xoai';
+        $bag = [];
+        $doc = $metadata->children($XOAI_NS);
+        if (!$doc) return $bag;
+
+        // Find the root container — usually <doc:metadata> wrapping <doc:element>s
+        foreach ($doc as $child) {
+            $this->walk_xoai_element($child, '', $bag, $XOAI_NS);
+        }
+        return $bag;
+    }
+
+    private function walk_xoai_element(\SimpleXMLElement $node, string $path, array &$bag, string $ns): void {
+        $tag = $node->getName();
+        $name = isset($node['name']) ? (string) $node['name'] : '';
+
+        if ($tag === 'field') {
+            // Only collect <field name="value"> — DSpace also emits authority/confidence
+            // fields we don't want to expose in the mapping table.
+            if ($name !== 'value') return;
+            $value = trim((string) $node);
+            if ($value === '') return;
+            // Strip the trailing language segment (last path component is the lang)
+            // Patterns: "dc.contributor.author.none" → "dc.contributor.author"
+            //           "dc.title.pt_BR"             → "dc.title"
+            $key = preg_replace('/\.(?:none|[a-z]{2,3}(?:[-_][A-Za-z]{2,4})?)$/', '', $path);
+            if ($key === '' || $key === null) return;
+
+            if (isset($bag[$key])) {
+                if (!is_array($bag[$key])) $bag[$key] = [$bag[$key]];
+                $bag[$key][] = $value;
+            } else {
+                $bag[$key] = $value;
+            }
+            return;
+        }
+
+        if ($tag === 'element' && $name !== '') {
+            $new_path = $path === '' ? $name : "$path.$name";
+            foreach ($node->children($ns) as $child) {
+                $this->walk_xoai_element($child, $new_path, $bag, $ns);
+            }
+        }
+    }
+
+    /**
+     * Parses qualified DC (Lyncode qdc / DSpace qdc).
+     * Structure:
+     *   <oai_qdc:qualifieddc xmlns:dc="..." xmlns:dcterms="...">
+     *     <dc:title>...</dc:title>
+     *     <dcterms:abstract>...</dcterms:abstract>
+     *     <dcterms:isPartOf>...</dcterms:isPartOf>
+     *
+     * Keys keep the local element name (e.g. "title", "abstract", "isPartOf") —
+     * dcterms qualifiers come through as their own keys, distinct from base dc.
+     */
+    private function parse_qdc_metadata(\SimpleXMLElement $metadata): array {
+        $bag = [];
+        $namespaces = [
+            self::DC_NS,                          // http://purl.org/dc/elements/1.1/
+            'http://purl.org/dc/terms/',          // dcterms:*
+        ];
+        // The wrapper element can vary (oai_qdc:qualifieddc, qdc:qualifieddc, etc.)
+        // Walk every child of <metadata> and pull elements in either DC namespace.
+        foreach ($metadata->children() as $wrapper) {
+            foreach ($namespaces as $ns) {
+                $this->collect_elements_into($bag, $wrapper->children($ns));
+            }
+        }
+        // Some servers don't nest the wrapper — try metadata's own children.
+        foreach ($namespaces as $ns) {
+            $this->collect_elements_into($bag, $metadata->children($ns));
+        }
+        return $bag;
     }
 
     private function collect_elements_into(array &$bag, $elements): void {
@@ -273,6 +376,12 @@ class Importer {
             $download_bs = (int) (bool) $args['download_bitstreams'];
         }
 
+        // Whitelist allowed prefixes — anything else is silently coerced to oai_dc
+        $prefix = !empty($args['metadata_prefix']) ? strtolower((string) $args['metadata_prefix']) : 'oai_dc';
+        if (!in_array($prefix, ['oai_dc', 'qdc', 'xoai'], true)) {
+            $prefix = 'oai_dc';
+        }
+
         $wpdb->insert($this->table, [
             'source_url' => $this->normalize_url($args['source_url']),
             'collection_id' => (int) $args['collection_id'],
@@ -281,6 +390,7 @@ class Importer {
             'until_date' => !empty($args['until_date']) ? $args['until_date'] : null,
             'metadata_mapping' => maybe_serialize($args['metadata_mapping'] ?? []),
             'download_bitstreams' => $download_bs,
+            'metadata_prefix' => $prefix,
             'status' => 'pending',
             'created_at' => gmdate('Y-m-d H:i:s'),
         ]);
@@ -307,16 +417,21 @@ class Importer {
             ], ['id' => $import_id]);
         }
 
+        // Allow per-import override of the metadata format. Keeps oai_dc as
+        // default for safety, but xoai/qdc preserve qualified DSpace field
+        // names (e.g. dc.contributor.author distinct from dc.contributor.advisor).
+        $prefix = !empty($import->metadata_prefix) ? (string) $import->metadata_prefix : 'oai_dc';
+
         // Per OAI-PMH spec: when using a resumption token, only verb + token allowed.
         if (!empty($import->resumption_token)) {
             $url = $import->source_url . '?verb=ListRecords&resumptionToken=' . urlencode($import->resumption_token);
             $this->append_log($import_id, 'INFO', 'page.fetch', 'Fetching with resumption token (token len ' . strlen($import->resumption_token) . ')');
         } else {
-            $url = $import->source_url . '?verb=ListRecords&metadataPrefix=oai_dc';
+            $url = $import->source_url . '?verb=ListRecords&metadataPrefix=' . urlencode($prefix);
             if (!empty($import->set_spec))   $url .= '&set='   . urlencode($import->set_spec);
             if (!empty($import->from_date))  $url .= '&from='  . urlencode($import->from_date);
             if (!empty($import->until_date)) $url .= '&until=' . urlencode($import->until_date);
-            $this->append_log($import_id, 'INFO', 'page.fetch', 'First page: ' . $url);
+            $this->append_log($import_id, 'INFO', 'page.fetch', 'First page (prefix=' . $prefix . '): ' . $url);
         }
 
         $t_request = microtime(true);
@@ -386,7 +501,7 @@ class Importer {
         }
 
         foreach ($records as $record) {
-            $parsed = $this->parse_record($record);
+            $parsed = $this->parse_record($record, $prefix);
             if (!$parsed) {
                 $failed++;
                 $this->append_log($import_id, 'ERROR', 'parse_record', 'Failed to parse a record (missing header?)');
@@ -590,7 +705,7 @@ class Importer {
 
             $records = $xml->ListRecords->record ?? [];
             foreach ($records as $record) {
-                $parsed = $this->parse_record($record);
+                $parsed = $this->parse_record($record, $prefix);
                 if (!$parsed) { $stats['failed']++; continue; }
 
                 if ($parsed['datestamp'] !== '' && (string) $parsed['datestamp'] > (string) ($stats['last_datestamp'] ?? '')) {
@@ -810,14 +925,22 @@ class Importer {
         $item = new \Tainacan\Entities\Item();
         $item->set_collection($collection);
 
-        $title = $record['metadata']['title'] ?? $record['identifier'];
-        if (is_array($title)) $title = $title[0] ?? '';
-        if (!is_string($title) || $title === '') $title = $record['identifier'] ?: __('Untitled imported item', 'tainacan-oai-pmh');
+        // Title/description live under different keys depending on the metadata
+        // format used to fetch the record:
+        //   oai_dc → title, description
+        //   qdc    → title, abstract / description
+        //   xoai   → dc.title, dc.description.abstract / dc.description
+        $title = $this->lookup_metadata_value($record['metadata'], ['title', 'dc.title']);
+        if (!is_string($title) || $title === '') {
+            $title = $record['identifier'] ?: __('Untitled imported item', 'tainacan-oai-pmh');
+        }
         $item->set_title($title);
 
-        if (!empty($record['metadata']['description'])) {
-            $desc = $record['metadata']['description'];
-            if (is_array($desc)) $desc = implode("\n\n", array_filter($desc));
+        $desc = $this->lookup_metadata_value(
+            $record['metadata'],
+            ['description', 'dc.description.abstract', 'abstract', 'dc.description']
+        );
+        if ($desc !== null && $desc !== '') {
             $item->set_description((string) $desc);
         }
 
@@ -1077,6 +1200,25 @@ class Importer {
             '[' . $oai_identifier . '] Dropping ' . $thumbnails . ' THUMBNAIL bitstream(s) — ' . $originals . ' ORIGINAL(s) already available; WordPress will generate its own thumbnail sizes');
 
         return array_values(array_filter($bitstreams, fn($bs) => ($bs['bundle'] ?? '') !== 'THUMBNAIL'));
+    }
+
+    /**
+     * Returns the first non-empty value for any of $keys in $bag.
+     * Multi-valued keys are joined when extracting (used for description fields).
+     * Used by create_item to find title/description across oai_dc / qdc / xoai
+     * shapes without forcing the caller to know which prefix produced the bag.
+     */
+    private function lookup_metadata_value(array $bag, array $keys): ?string {
+        foreach ($keys as $key) {
+            if (!isset($bag[$key])) continue;
+            $value = $bag[$key];
+            if (is_array($value)) {
+                $value = implode("\n\n", array_filter($value, fn($v) => is_string($v) && $v !== ''));
+            }
+            $value = is_string($value) ? trim($value) : '';
+            if ($value !== '') return $value;
+        }
+        return null;
     }
 
     /** No-op wrapper: only logs when an import_id was supplied (e.g. from process_batch). */

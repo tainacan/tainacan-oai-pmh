@@ -31,6 +31,16 @@ $imports = $data['imports'];
                         <p><strong><?php esc_html_e('Email:', 'tainacan-oai-pmh'); ?></strong> <span id="repo-email"></span></p>
                         <p><strong><?php esc_html_e('Earliest Date:', 'tainacan-oai-pmh'); ?></strong> <span id="repo-earliest"></span></p>
                     </div>
+
+                    <div class="oai-form-group" id="metadata-format-group" style="display:none;">
+                        <label for="metadata-format"><?php esc_html_e('Metadata format', 'tainacan-oai-pmh'); ?></label>
+                        <select id="metadata-format">
+                            <option value="oai_dc">oai_dc — <?php esc_html_e('Unqualified Dublin Core (15 fields, lossy)', 'tainacan-oai-pmh'); ?></option>
+                        </select>
+                        <p class="description" id="metadata-format-help">
+                            <?php esc_html_e('Choose the format used to fetch records. xOAI/qdc preserve qualified DSpace field names like dc.contributor.author so you can map each one separately to a Tainacan metadatum. oai_dc collapses all of them to the 15 standard DC fields.', 'tainacan-oai-pmh'); ?>
+                        </p>
+                    </div>
                 </div>
             </div>
             

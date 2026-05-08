@@ -137,14 +137,19 @@ class Metadata_Mapper {
 
     /**
      * Tiered suggestion strategy (high confidence → low):
-     *   1) Exact dublin-core exposer match (declared in Tainacan)
-     *   2) Exact slug/name match (case-insensitive)
+     *   1) Exact dublin-core exposer match against the FULL field name
+     *      (handles oai_dc unqualified like "title" and dc.* fully qualified)
+     *   2) Match dublin-core exposer / name / slug against any segment of the
+     *      qualified path:  "dc.contributor.author" → tries "author", then
+     *      "contributor", then the full name. This lets xoai's qualified
+     *      DSpace fields auto-suggest sensible Tainacan targets.
      *   3) Substring containment (>= 6 chars, to avoid trivial matches)
      * Similar_text is intentionally NOT used — it produced too many false positives.
      */
     private static function suggest_for_field(string $field_name, array $collection_metadata): ?int {
         $field_name = strtolower($field_name);
 
+        // Tier 1: full-name exact match against declared Tainacan exposers/names
         foreach ($collection_metadata as $meta) {
             if ($meta['is_core']) continue;
             if ($meta['dc_mapping'] === $field_name) return (int) $meta['id'];
@@ -155,15 +160,47 @@ class Metadata_Mapper {
             $slug = strtolower($meta['slug'] ?? '');
             if ($name === $field_name || $slug === $field_name) return (int) $meta['id'];
         }
-        if (strlen($field_name) >= 6) {
+
+        // Tier 2: try every meaningful segment of a qualified path.
+        // For "dc.contributor.author" we try ["author", "contributor", "dc"]
+        // (last-most specific first), skipping single-letter segments and "dc"/"dcterms".
+        $segments = self::candidate_segments($field_name);
+        foreach ($segments as $seg) {
+            foreach ($collection_metadata as $meta) {
+                if ($meta['is_core']) continue;
+                if ($meta['dc_mapping'] === $seg) return (int) $meta['id'];
+                if (strtolower($meta['name']) === $seg) return (int) $meta['id'];
+                if (strtolower($meta['slug'] ?? '') === $seg) return (int) $meta['id'];
+            }
+        }
+
+        // Tier 3: substring containment using the most specific segment
+        $needle = $segments[0] ?? $field_name;
+        if (strlen($needle) >= 6) {
             foreach ($collection_metadata as $meta) {
                 if ($meta['is_core']) continue;
                 $name = strtolower($meta['name']);
-                if (str_contains($name, $field_name) || str_contains($field_name, $name)) {
+                if ($name !== '' && (str_contains($name, $needle) || str_contains($needle, $name))) {
                     return (int) $meta['id'];
                 }
             }
         }
         return null;
+    }
+
+    /**
+     * Splits a qualified field name into a ranked list of candidate segments
+     * for matching, most specific first. Filters out namespace prefixes that
+     * would otherwise match too aggressively (dc, dcterms, oai_dc).
+     */
+    private static function candidate_segments(string $field_name): array {
+        if (!str_contains($field_name, '.')) return [];
+        $parts = explode('.', $field_name);
+        $parts = array_values(array_filter(
+            array_map('strtolower', $parts),
+            fn($p) => strlen($p) >= 2 && !in_array($p, ['dc', 'dcterms', 'oai_dc', 'none'], true)
+        ));
+        // Reverse so "author" comes before "contributor" comes before "dc"
+        return array_reverse($parts);
     }
 }
