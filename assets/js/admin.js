@@ -41,6 +41,20 @@
             $('#btn-next-step').on('click', this.nextStep.bind(this));
             $('#btn-prev-step').on('click', this.prevStep.bind(this));
             $('#target-collection').on('change', this.onCollectionChange.bind(this));
+
+            // Harvest sources (scheduled)
+            $('#btn-new-harvest-source').on('click', this.openHarvestModal.bind(this, null));
+            $('#btn-cancel-harvest').on('click', this.closeHarvestModal.bind(this));
+            $('#btn-save-harvest').on('click', this.saveHarvestSource.bind(this));
+            $('#harvest-collection').on('change', this.loadHarvestMapping.bind(this));
+            $('#harvest-sources-table').on('click', '.btn-run-harvest', this.runHarvestSource.bind(this));
+            $('#harvest-sources-table').on('click', '.btn-edit-harvest', this.editHarvestSource.bind(this));
+            $('#harvest-sources-table').on('click', '.btn-delete-harvest', this.deleteHarvestSource.bind(this));
+            $('#harvest-sources-table').on('click', '.btn-toggle-harvest', this.toggleHarvestSource.bind(this));
+            $('#toggle-all-harvest-errors').on('click', function (e) {
+                e.preventDefault();
+                $('.oai-source-errors').toggle();
+            });
         },
 
         // ---------- helpers ----------
@@ -487,6 +501,205 @@
             const newStep = currentStep - 1;
             $('#btn-prev-step').toggle(newStep > 1);
             $('#btn-next-step').show();
+        },
+
+        // ---------- Harvest sources (scheduled) ----------
+
+        openHarvestModal: function (sourceData) {
+            const isEdit = sourceData && sourceData.id;
+            $('#harvest-modal-title').text(isEdit
+                ? tainacanOAI.strings.edit_harvest || 'Edit Harvest Source'
+                : tainacanOAI.strings.new_harvest || 'New Harvest Source');
+
+            $('#harvest-id').val(isEdit ? sourceData.id : '');
+            $('#harvest-label').val(isEdit ? sourceData.label : '');
+            $('#harvest-url').val(isEdit ? sourceData.source_url : '');
+            $('#harvest-collection').val(isEdit ? sourceData.collection_id : '');
+            $('#harvest-set').val(isEdit ? (sourceData.set_spec || '') : '');
+            $('#harvest-schedule').val(isEdit ? sourceData.schedule : 'daily');
+            $('#harvest-active').prop('checked', isEdit ? !!parseInt(sourceData.is_active) : true);
+            $('#harvest-bitstreams').prop('checked', isEdit ? !!parseInt(sourceData.download_bitstreams) : true);
+
+            this._pendingMapping = isEdit && sourceData.metadata_mapping ? sourceData.metadata_mapping : {};
+
+            // Reset mapping table; trigger load if collection is set
+            $('#harvest-mapping-table tbody').html('<tr><td colspan="2" style="text-align:center;color:#999;">Select a collection to load mapping options.</td></tr>');
+            if ($('#harvest-collection').val()) this.loadHarvestMapping();
+
+            $('#harvest-source-modal').show();
+        },
+
+        closeHarvestModal: function () {
+            $('#harvest-source-modal').hide();
+            this._pendingMapping = {};
+        },
+
+        loadHarvestMapping: function () {
+            const collectionId = $('#harvest-collection').val();
+            const $tbody = $('#harvest-mapping-table tbody').empty();
+            if (!collectionId) {
+                $tbody.append('<tr><td colspan="2" style="text-align:center;color:#999;">Select a collection.</td></tr>');
+                return;
+            }
+            $tbody.append('<tr><td colspan="2" style="text-align:center;">Loading…</td></tr>');
+
+            // We don't have a preview yet at this point — feed an empty source_fields
+            // so the backend returns the 15 standard DC rows.
+            this.ajax('tainacan_oai_build_mapping', {
+                collection_id: collectionId,
+                source_fields: '[]'
+            }).done(function (response) {
+                if (!response.success) {
+                    $tbody.html('<tr><td colspan="2" style="color:#d63638;">' + TainacanOAI.errorMessage(response) + '</td></tr>');
+                    return;
+                }
+                $tbody.empty();
+                const rows = response.data.rows || [];
+                const meta = response.data.collection_metadata || [];
+                const pending = TainacanOAI._pendingMapping || {};
+
+                rows.forEach(function (row) {
+                    const $tr = $('<tr>');
+                    $tr.append($('<td>').append($('<strong>', { text: 'dc:' + row.name })));
+
+                    const $select = $('<select>', { 'class': 'harvest-mapping-select', name: 'mapping[' + row.name + ']' });
+                    $select.append($('<option>', { value: '', text: '— Skip —' }));
+                    meta.forEach(function (m) {
+                        if (m.is_core) return;
+                        const isSelected = pending[row.name]
+                            ? String(m.id) === String(pending[row.name])
+                            : String(m.id) === String(row.suggested_metadatum_id);
+                        $select.append($('<option>', {
+                            value: m.id,
+                            text: m.name + (m.required ? ' *' : '') + (m.multiple ? ' [multi]' : ''),
+                            selected: isSelected
+                        }));
+                    });
+                    $tr.append($('<td>').append($select));
+                    $tbody.append($tr);
+                });
+            }).fail(function () {
+                $tbody.html('<tr><td colspan="2" style="color:#d63638;">Failed to load mapping options.</td></tr>');
+            });
+        },
+
+        saveHarvestSource: function () {
+            const mapping = {};
+            $('#harvest-mapping-table .harvest-mapping-select').each(function () {
+                const m = ($(this).attr('name') || '').match(/\[(.+)\]/);
+                if (!m) return;
+                const value = $(this).val();
+                if (value) mapping[m[1]] = value;
+            });
+
+            const data = {
+                id: $('#harvest-id').val() || 0,
+                label: $('#harvest-label').val().trim(),
+                source_url: $('#harvest-url').val().trim(),
+                collection_id: $('#harvest-collection').val(),
+                set_spec: $('#harvest-set').val().trim(),
+                schedule: $('#harvest-schedule').val(),
+                is_active: $('#harvest-active').is(':checked') ? 1 : 0,
+                download_bitstreams: $('#harvest-bitstreams').is(':checked') ? 1 : 0,
+                metadata_mapping: JSON.stringify(mapping)
+            };
+
+            if (!data.label || !data.source_url || !data.collection_id) {
+                alert('Label, URL and Collection are required.');
+                return;
+            }
+
+            const $btn = $('#btn-save-harvest');
+            this.setLoading($btn, true);
+
+            this.ajax('tainacan_oai_save_harvest_source', data)
+                .done(function (response) {
+                    if (response.success) {
+                        TainacanOAI.notice('success', response.data.message);
+                        TainacanOAI.closeHarvestModal();
+                        setTimeout(function () { location.reload(); }, 800);
+                    } else {
+                        TainacanOAI.notice('error', TainacanOAI.errorMessage(response));
+                    }
+                })
+                .fail(function () { TainacanOAI.notice('error', tainacanOAI.strings.error); })
+                .always(function () { TainacanOAI.setLoading($btn, false); });
+        },
+
+        editHarvestSource: function (e) {
+            e.preventDefault();
+            const id = $(e.currentTarget).closest('tr').data('source-id');
+
+            this.ajax('tainacan_oai_get_harvest_source', { id: id })
+                .done(function (response) {
+                    if (response.success) TainacanOAI.openHarvestModal(response.data);
+                    else TainacanOAI.notice('error', TainacanOAI.errorMessage(response));
+                })
+                .fail(function () { TainacanOAI.notice('error', tainacanOAI.strings.error); });
+        },
+
+        deleteHarvestSource: function (e) {
+            e.preventDefault();
+            if (!confirm('Delete this harvest source? Items already imported will not be removed.')) return;
+
+            const id = $(e.currentTarget).closest('tr').data('source-id');
+            this.ajax('tainacan_oai_delete_harvest_source', { id: id })
+                .done(function (response) {
+                    if (response.success) {
+                        TainacanOAI.notice('success', response.data.message);
+                        $('tr[data-source-id="' + id + '"]').fadeOut();
+                        $('#harvest-errors-' + id).remove();
+                    } else {
+                        TainacanOAI.notice('error', TainacanOAI.errorMessage(response));
+                    }
+                });
+        },
+
+        runHarvestSource: function (e) {
+            e.preventDefault();
+            const $btn = $(e.currentTarget);
+            const id = $btn.closest('tr').data('source-id');
+
+            this.setLoading($btn, true);
+            this.notice('info', 'Running harvest — this may take several minutes…');
+
+            // Long-running synchronous request; bump timeout substantially.
+            this.ajax('tainacan_oai_run_harvest_source', { id: id }, { timeout: 1800000 })
+                .done(function (response) {
+                    if (response.success) {
+                        const s = response.data.stats;
+                        TainacanOAI.notice(
+                            'success',
+                            'Created ' + s.created + ', Updated ' + s.updated +
+                            ', Skipped ' + s.skipped + ', Failed ' + s.failed +
+                            ', Deleted ' + s.deleted + ' (in ' + s.pages + ' page(s))'
+                        );
+                        setTimeout(function () { location.reload(); }, 1500);
+                    } else {
+                        TainacanOAI.notice('error', TainacanOAI.errorMessage(response));
+                    }
+                })
+                .fail(function () {
+                    // Even on JS timeout the server keeps running — refresh later
+                    TainacanOAI.notice('warning', 'Connection timed out, but the harvest is still running on the server. Reload in a few minutes.');
+                })
+                .always(function () { TainacanOAI.setLoading($btn, false); });
+        },
+
+        toggleHarvestSource: function (e) {
+            e.preventDefault();
+            const $btn = $(e.currentTarget);
+            const id = $btn.closest('tr').data('source-id');
+
+            this.ajax('tainacan_oai_toggle_harvest_source', { id: id })
+                .done(function (response) {
+                    if (response.success) {
+                        TainacanOAI.notice('success', response.data.is_active ? 'Source resumed.' : 'Source paused.');
+                        setTimeout(function () { location.reload(); }, 600);
+                    } else {
+                        TainacanOAI.notice('error', TainacanOAI.errorMessage(response));
+                    }
+                });
         },
 
         // ---------- Chart ----------

@@ -5,6 +5,7 @@ $tab = $data['tab'] ?? 'dashboard';
 $tabs = [
     'dashboard' => ['icon' => 'dashicons-dashboard', 'label' => __('Dashboard', 'tainacan-oai-pmh')],
     'importer' => ['icon' => 'dashicons-download', 'label' => __('Importer', 'tainacan-oai-pmh')],
+    'harvest' => ['icon' => 'dashicons-update', 'label' => __('Scheduled Harvest', 'tainacan-oai-pmh')],
     'harvesters' => ['icon' => 'dashicons-networking', 'label' => __('Harvesters', 'tainacan-oai-pmh')],
     'logs' => ['icon' => 'dashicons-list-view', 'label' => __('Logs', 'tainacan-oai-pmh')],
     'validation' => ['icon' => 'dashicons-yes-alt', 'label' => __('Validation', 'tainacan-oai-pmh')],
@@ -38,6 +39,9 @@ $tabs = [
         switch ($tab) {
             case 'importer':
                 include __DIR__ . '/tab-importer.php';
+                break;
+            case 'harvest':
+                include __DIR__ . '/tab-harvest.php';
                 break;
             case 'harvesters':
                 include __DIR__ . '/tab-harvesters.php';

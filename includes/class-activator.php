@@ -89,6 +89,35 @@ class Activator {
             KEY expires_at (expires_at)
         ) $charset");
         
+        // Harvest sources (persistent scheduled harvesters)
+        $wpdb->query("CREATE TABLE IF NOT EXISTS {$wpdb->prefix}tainacan_oai_sources (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            label VARCHAR(255) NOT NULL,
+            source_url VARCHAR(500) NOT NULL,
+            collection_id BIGINT UNSIGNED NOT NULL,
+            set_spec VARCHAR(255),
+            metadata_mapping LONGTEXT,
+            schedule VARCHAR(20) NOT NULL DEFAULT 'daily',
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
+            download_bitstreams TINYINT(1) NOT NULL DEFAULT 1,
+            last_run_at DATETIME,
+            last_success_at DATETIME,
+            last_datestamp VARCHAR(30),
+            last_run_status VARCHAR(20) DEFAULT 'never',
+            last_run_message TEXT,
+            items_created INT UNSIGNED DEFAULT 0,
+            items_updated INT UNSIGNED DEFAULT 0,
+            items_skipped INT UNSIGNED DEFAULT 0,
+            items_failed INT UNSIGNED DEFAULT 0,
+            items_deleted INT UNSIGNED DEFAULT 0,
+            error_log TEXT,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            KEY collection_id (collection_id),
+            KEY schedule (schedule),
+            KEY is_active (is_active)
+        ) $charset");
+
         // Rate limits table
         $wpdb->query("CREATE TABLE IF NOT EXISTS {$wpdb->prefix}tainacan_oai_rate_limits (
             id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -110,6 +139,10 @@ class Activator {
     
     public static function deactivate() {
         wp_clear_scheduled_hook('tainacan_oai_daily_maintenance');
+        // Clear every per-source harvest cron event (one per saved source)
+        if (class_exists('\\Tainacan_OAI_PMH\\Harvester')) {
+            \Tainacan_OAI_PMH\Harvester::unschedule_all();
+        }
         flush_rewrite_rules();
     }
 }

@@ -15,6 +15,7 @@ class Plugin extends \Tainacan\Pages {
     private $importer;
     private $rate_limiter;
     private $token_manager;
+    private $harvester;
     
     /**
      * Required: Define unique page slug
@@ -34,7 +35,11 @@ class Plugin extends \Tainacan\Pages {
         $this->importer = new Importer();
         $this->rate_limiter = new Rate_Limiter();
         $this->token_manager = new Token_Manager();
-        
+        $this->harvester = new Harvester();
+
+        // Custom cron schedule + per-source cron action
+        Harvester::register_hooks();
+
         $this->init_hooks();
     }
     
@@ -143,6 +148,7 @@ class Plugin extends \Tainacan\Pages {
             'blocked_ips' => $this->rate_limiter->get_blocked(),
             'collections' => $this->get_collections(),
             'imports' => $this->importer->get_imports(),
+            'harvest_sources' => $this->build_harvest_sources_view(),
         ];
         
         if ($tab === 'validation') {
@@ -156,6 +162,18 @@ class Plugin extends \Tainacan\Pages {
     private function get_collections() {
         $repo = \Tainacan\Repositories\Collections::get_instance();
         return $repo->fetch([], 'OBJECT');
+    }
+
+    /**
+     * Decorates harvest sources with the next scheduled run timestamp
+     * (kept here so the template stays free of cron lookups).
+     */
+    private function build_harvest_sources_view(): array {
+        $sources = $this->harvester->get_all();
+        foreach ($sources as $s) {
+            $s->next_run_ts = $this->harvester->next_scheduled((int) $s->id);
+        }
+        return $sources;
     }
     
     private function register_ajax_handlers() {
@@ -175,6 +193,11 @@ class Plugin extends \Tainacan\Pages {
             'tainacan_oai_build_mapping',
             'tainacan_oai_get_import_status',
             'tainacan_oai_unblock_ip',
+            'tainacan_oai_save_harvest_source',
+            'tainacan_oai_delete_harvest_source',
+            'tainacan_oai_run_harvest_source',
+            'tainacan_oai_toggle_harvest_source',
+            'tainacan_oai_get_harvest_source',
         ];
 
         foreach ($handlers as $action) {
@@ -392,6 +415,87 @@ class Plugin extends \Tainacan\Pages {
             'total' => (int) $import->total_records,
             'error_log' => $import->error_log ? array_slice(array_filter(explode("\n", $import->error_log)), -20) : [],
         ]);
+    }
+
+    /**
+     * Create or update a harvest source. Posts JSON-encoded metadata_mapping.
+     * If `id` is present, updates; otherwise creates.
+     */
+    public function ajax_save_harvest_source() {
+        $this->authorize_ajax();
+        $id = absint($_POST['id'] ?? 0);
+        $mapping_raw = isset($_POST['metadata_mapping']) ? wp_unslash($_POST['metadata_mapping']) : '';
+        $mapping = $mapping_raw !== '' ? json_decode($mapping_raw, true) : [];
+        if (!is_array($mapping)) $mapping = [];
+
+        $args = [
+            'label' => sanitize_text_field(wp_unslash($_POST['label'] ?? '')),
+            'source_url' => esc_url_raw(wp_unslash($_POST['source_url'] ?? '')),
+            'collection_id' => absint($_POST['collection_id'] ?? 0),
+            'set_spec' => sanitize_text_field(wp_unslash($_POST['set_spec'] ?? '')),
+            'schedule' => sanitize_key($_POST['schedule'] ?? 'daily'),
+            'is_active' => !empty($_POST['is_active']),
+            'download_bitstreams' => !empty($_POST['download_bitstreams']),
+            'metadata_mapping' => $mapping,
+        ];
+
+        $result = $id > 0 ? $this->harvester->update($id, $args) : $this->harvester->create($args);
+        if (is_wp_error($result)) wp_send_json_error(['message' => $result->get_error_message()]);
+
+        $saved_id = $id > 0 ? $id : (int) $result;
+        wp_send_json_success([
+            'id' => $saved_id,
+            'next_run' => $this->harvester->next_scheduled($saved_id),
+            'message' => __('Harvest source saved.', 'tainacan-oai-pmh'),
+        ]);
+    }
+
+    public function ajax_delete_harvest_source() {
+        $this->authorize_ajax();
+        $id = absint($_POST['id'] ?? 0);
+        if (!$id) wp_send_json_error(['message' => __('Invalid source ID.', 'tainacan-oai-pmh')]);
+        $this->harvester->delete($id);
+        wp_send_json_success(['message' => __('Harvest source deleted.', 'tainacan-oai-pmh')]);
+    }
+
+    /**
+     * Trigger an immediate run of a saved source. The run is synchronous —
+     * could take minutes for large initial harvests but the response carries
+     * the actual stats so the UI doesn't have to poll.
+     */
+    public function ajax_run_harvest_source() {
+        $this->authorize_ajax();
+        $id = absint($_POST['id'] ?? 0);
+        if (!$id) wp_send_json_error(['message' => __('Invalid source ID.', 'tainacan-oai-pmh')]);
+
+        $stats = $this->harvester->run($id);
+        if (is_wp_error($stats)) wp_send_json_error(['message' => $stats->get_error_message()]);
+        wp_send_json_success(['stats' => $stats]);
+    }
+
+    public function ajax_toggle_harvest_source() {
+        $this->authorize_ajax();
+        $id = absint($_POST['id'] ?? 0);
+        if (!$id) wp_send_json_error(['message' => __('Invalid source ID.', 'tainacan-oai-pmh')]);
+        $source = $this->harvester->get($id);
+        if (!$source) wp_send_json_error(['message' => __('Source not found.', 'tainacan-oai-pmh')]);
+
+        $result = $this->harvester->update($id, ['is_active' => !$source->is_active]);
+        if (is_wp_error($result)) wp_send_json_error(['message' => $result->get_error_message()]);
+        wp_send_json_success([
+            'is_active' => !$source->is_active,
+            'next_run' => $this->harvester->next_scheduled($id),
+        ]);
+    }
+
+    public function ajax_get_harvest_source() {
+        $this->authorize_ajax();
+        $id = absint($_POST['id'] ?? 0);
+        $source = $this->harvester->get($id);
+        if (!$source) wp_send_json_error(['message' => __('Not found.', 'tainacan-oai-pmh')]);
+
+        $source->metadata_mapping = maybe_unserialize($source->metadata_mapping) ?: [];
+        wp_send_json_success($source);
     }
 
     public function ajax_unblock_ip() {

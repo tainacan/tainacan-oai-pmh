@@ -490,3 +490,82 @@
 #endpoint-result .notice {
     margin: 15px 0 0;
 }
+
+/* ---------- Harvest sources tab ---------- */
+
+#harvest-sources-table .oai-row-actions {
+    white-space: nowrap;
+}
+#harvest-sources-table .oai-row-actions .button {
+    margin-right: 2px;
+    padding: 2px 6px;
+    line-height: 1;
+}
+#harvest-sources-table .oai-row-actions .dashicons {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+    line-height: 1;
+}
+
+.oai-source-error td {
+    background: #fef6f6;
+}
+.oai-source-running td {
+    background: #f0f6fc;
+}
+
+.oai-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.oai-card-header .button {
+    margin-left: auto;
+}
+
+/* Modal */
+.oai-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 100000;
+}
+.oai-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+}
+.oai-modal-content {
+    position: relative;
+    max-width: 760px;
+    margin: 40px auto;
+    background: #fff;
+    border-radius: 6px;
+    padding: 24px 28px;
+    max-height: calc(100vh - 80px);
+    overflow-y: auto;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+.oai-modal-content h2 {
+    margin-top: 0;
+}
+.oai-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid #eee;
+}
+#harvest-mapping-table {
+    margin-top: 6px;
+    max-height: 300px;
+    overflow-y: auto;
+    display: block;
+}
+#harvest-mapping-table thead,
+#harvest-mapping-table tbody {
+    display: table;
+    width: 100%;
+    table-layout: fixed;
+}

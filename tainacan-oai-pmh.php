@@ -52,12 +52,22 @@ add_action('plugins_loaded', function() {
     require_once TAINACAN_OAI_PMH_DIR . 'includes/class-metadata-mapper.php';
     require_once TAINACAN_OAI_PMH_DIR . 'includes/class-rate-limiter.php';
     require_once TAINACAN_OAI_PMH_DIR . 'includes/class-token-manager.php';
+    require_once TAINACAN_OAI_PMH_DIR . 'includes/class-harvester.php';
     require_once TAINACAN_OAI_PMH_DIR . 'includes/class-plugin.php';
     
     if (defined('WP_CLI') && WP_CLI) {
         require_once TAINACAN_OAI_PMH_DIR . 'includes/class-cli.php';
     }
-    
+
+    // Lightweight schema migration: re-runs activator (CREATE TABLE IF NOT EXISTS
+    // is idempotent) whenever plugin version changes. Catches users who upgrade
+    // by replacing files instead of going through deactivate/activate.
+    $stored_version = get_option('tainacan_oai_pmh_db_version');
+    if ($stored_version !== TAINACAN_OAI_PMH_VERSION) {
+        \Tainacan_OAI_PMH\Activator::activate();
+        update_option('tainacan_oai_pmh_db_version', TAINACAN_OAI_PMH_VERSION);
+    }
+
     // Initialize plugin
     \Tainacan_OAI_PMH\Plugin::get_instance();
     

@@ -407,6 +407,175 @@ class Importer {
         ];
     }
 
+    /**
+     * Periodic harvest loop with insert/update/delete diff.
+     *
+     * Driven by Harvester for scheduled runs. Differs from process_batch:
+     *  - Stateless (no DB-persisted resumption — runs to completion or fails)
+     *  - Uses OAI `from` parameter for incremental sync
+     *  - On existing items: compares header.datestamp vs stored datestamp
+     *      → newer  : update_item_from_oai (re-applies mapping)
+     *      → equal  : skip
+     *  - On records with status="deleted": trashes the local item
+     *  - Caps resumption-token follow-through at 200 pages so a misbehaving
+     *    upstream can't pin the cron worker forever
+     *
+     * @return array{
+     *   created:int, updated:int, skipped:int, failed:int, deleted:int,
+     *   pages:int, last_datestamp:?string, errors:string[]
+     * }
+     */
+    public function harvest_loop(array $config): array {
+        if (function_exists('set_time_limit')) @set_time_limit(0);
+        ignore_user_abort(true);
+
+        $stats = [
+            'created' => 0, 'updated' => 0, 'skipped' => 0,
+            'failed' => 0, 'deleted' => 0, 'pages' => 0,
+            'last_datestamp' => null, 'errors' => [],
+        ];
+
+        $url = $this->normalize_url($config['source_url'] ?? '');
+        $val = $this->validate_url($url);
+        if (is_wp_error($val)) { $stats['errors'][] = $val->get_error_message(); return $stats; }
+
+        $set_spec = (string) ($config['set_spec'] ?? '');
+        $collection_id = (int) ($config['collection_id'] ?? 0);
+        $mapping = is_array($config['metadata_mapping'] ?? null) ? $config['metadata_mapping'] : [];
+        $download_bs = !empty($config['download_bitstreams']);
+        $from = (string) ($config['from'] ?? '');
+        $until = (string) ($config['until'] ?? '');
+
+        if ($collection_id <= 0) { $stats['errors'][] = 'invalid collection_id'; return $stats; }
+
+        $resumption = '';
+        $max_pages = 200;
+
+        do {
+            if ($resumption !== '') {
+                $page_url = $url . '?verb=ListRecords&resumptionToken=' . urlencode($resumption);
+            } else {
+                $page_url = $url . '?verb=ListRecords&metadataPrefix=oai_dc';
+                if ($set_spec !== '') $page_url .= '&set='   . urlencode($set_spec);
+                if ($from !== '')     $page_url .= '&from='  . urlencode($from);
+                if ($until !== '')    $page_url .= '&until=' . urlencode($until);
+            }
+
+            $body = $this->request($page_url);
+            if (is_wp_error($body)) { $stats['errors'][] = $body->get_error_message(); break; }
+
+            $xml = $this->parse_xml($body);
+            if (is_wp_error($xml)) { $stats['errors'][] = $xml->get_error_message(); break; }
+
+            if (isset($xml->error)) {
+                $code = (string) $xml->error['code'];
+                if ($code === 'noRecordsMatch') break; // not an error — empty delta
+                $stats['errors'][] = $code . ': ' . (string) $xml->error;
+                break;
+            }
+
+            $records = $xml->ListRecords->record ?? [];
+            foreach ($records as $record) {
+                $parsed = $this->parse_record($record);
+                if (!$parsed) { $stats['failed']++; continue; }
+
+                if ($parsed['datestamp'] !== '' && (string) $parsed['datestamp'] > (string) ($stats['last_datestamp'] ?? '')) {
+                    $stats['last_datestamp'] = $parsed['datestamp'];
+                }
+
+                $existing = $this->find_item_by_oai_identifier($parsed['identifier']);
+
+                // Tombstone: upstream tells us this record was deleted
+                if ($parsed['status'] === 'deleted') {
+                    if ($existing) {
+                        wp_trash_post($existing);
+                        $stats['deleted']++;
+                    } else {
+                        $stats['skipped']++;
+                    }
+                    continue;
+                }
+
+                if ($existing) {
+                    $stored = (string) get_post_meta($existing, '_tainacan_oai_source_datestamp', true);
+                    if ($stored !== '' && $parsed['datestamp'] !== '' && $parsed['datestamp'] <= $stored) {
+                        // Untouched upstream — but backfill bitstreams if they're missing
+                        if ($download_bs && !$this->item_has_oai_bitstreams($existing)) {
+                            $this->enrich_item_with_bitstreams($existing, $parsed['identifier'], $url);
+                        }
+                        $stats['skipped']++;
+                        continue;
+                    }
+                    $upd = $this->update_item_from_oai($existing, $parsed, $mapping);
+                    if (is_wp_error($upd)) {
+                        $stats['failed']++;
+                        $stats['errors'][] = '[' . $parsed['identifier'] . '] update: ' . $upd->get_error_message();
+                    } else {
+                        $stats['updated']++;
+                        if ($download_bs && !$this->item_has_oai_bitstreams($existing)) {
+                            $this->enrich_item_with_bitstreams($existing, $parsed['identifier'], $url);
+                        }
+                    }
+                    continue;
+                }
+
+                $created = $this->create_item($collection_id, $parsed, $mapping);
+                if (is_wp_error($created)) {
+                    $stats['failed']++;
+                    $stats['errors'][] = '[' . $parsed['identifier'] . '] create: ' . $created->get_error_message();
+                    continue;
+                }
+                $stats['created']++;
+                if ($download_bs) {
+                    $this->enrich_item_with_bitstreams((int) $created, $parsed['identifier'], $url);
+                }
+            }
+
+            $stats['pages']++;
+            $rt = $xml->ListRecords->resumptionToken ?? null;
+            $resumption = $rt ? trim((string) $rt) : '';
+        } while ($resumption !== '' && $stats['pages'] < $max_pages);
+
+        return $stats;
+    }
+
+    /**
+     * Updates an existing Tainacan item from a freshly-parsed OAI record.
+     * Re-applies the user's DC mapping (overwriting prior values for those
+     * metadata) and refreshes title/description + the source datestamp.
+     */
+    public function update_item_from_oai(int $item_id, array $parsed, array $mapping) {
+        $post = get_post($item_id);
+        if (!$post) return new \WP_Error('not_found', 'Item not found.');
+
+        $title = $parsed['metadata']['title'] ?? $parsed['identifier'];
+        if (is_array($title)) $title = $title[0] ?? '';
+        if (!is_string($title) || $title === '') $title = $parsed['identifier'] ?: $post->post_title;
+
+        $desc = $parsed['metadata']['description'] ?? '';
+        if (is_array($desc)) $desc = implode("\n\n", array_filter($desc));
+
+        wp_update_post([
+            'ID' => $item_id,
+            'post_title' => $title,
+            'post_content' => (string) $desc,
+        ]);
+
+        if (!empty($mapping)) {
+            try {
+                $item = new \Tainacan\Entities\Item($item_id);
+                if ($item->get_id()) {
+                    $this->apply_mapping($item, $parsed['metadata'], $mapping);
+                }
+            } catch (\Throwable $e) {
+                return new \WP_Error('mapping_error', $e->getMessage());
+            }
+        }
+
+        update_post_meta($item_id, '_tainacan_oai_source_datestamp', (string) $parsed['datestamp']);
+        return true;
+    }
+
     private function find_item_by_oai_identifier(string $oai_identifier): ?int {
         if ($oai_identifier === '') return null;
         global $wpdb;
