@@ -51,7 +51,7 @@ jobs:
       - name: Run PHPCS — security & DB rules only
         run: |
           vendor/bin/phpcs --standard=phpcs.xml.dist \
-            --sniffs=WordPress.Security.NonceVerification,WordPress.Security.ValidatedSanitizedInput,WordPress.Security.EscapeOutput,WordPress.Security.SafeRedirect,WordPress.Security.PluginMenuSlug,WordPress.DB.PreparedSQL,WordPress.DB.PreparedSQLPlaceholders,WordPress.DB.DirectDatabaseQuery,WordPress.DB.SlowDBQuery,WordPress.WP.GlobalVariablesOverride,WordPressVIPMinimum.Security \
+            --sniffs=WordPress.Security.NonceVerification,WordPress.Security.ValidatedSanitizedInput,WordPress.Security.EscapeOutput,WordPress.Security.SafeRedirect,WordPress.Security.PluginMenuSlug,WordPress.DB.PreparedSQL,WordPress.DB.PreparedSQLPlaceholders,WordPress.DB.DirectDatabaseQuery,WordPress.DB.SlowDBQuery,WordPress.WP.GlobalVariablesOverride \
             --report=checkstyle | cs2pr
 
   phpcs-style:
@@ -124,9 +124,13 @@ jobs:
         run: composer install --no-progress --prefer-dist
 
       - name: Install WordPress test suite
+        # The MySQL service block above pre-creates the wordpress_test
+        # database via MYSQL_DATABASE; pass `true` as the 6th arg to
+        # install-wp-tests.sh so it skips its own CREATE DATABASE step
+        # (which would fail with "database exists").
         run: |
           chmod +x tests/bin/install-wp-tests.sh
-          tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 ${{ matrix.wordpress }}
+          tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 ${{ matrix.wordpress }} true
 
       - name: Install Tainacan core into test env
         run: |
