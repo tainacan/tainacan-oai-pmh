@@ -14,10 +14,10 @@
     verbose="true">
     <testsuites>
         <testsuite name="unit">
-            <directory suffix="-test.php">./tests/unit</directory>
+            <directory prefix="test-" suffix=".php">./tests/unit</directory>
         </testsuite>
         <testsuite name="integration">
-            <directory suffix="-test.php">./tests/integration</directory>
+            <directory prefix="test-" suffix=".php">./tests/integration</directory>
         </testsuite>
     </testsuites>
     <coverage>
