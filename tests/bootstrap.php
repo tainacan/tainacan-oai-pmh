@@ -13,12 +13,12 @@
 $_tests_dir = getenv( 'WP_TESTS_DIR' );
 
 if ( empty( $_tests_dir ) ) {
-    $_tests_dir = rtrim( sys_get_temp_dir(), '/\\' ) . '/wordpress-tests-lib';
+	$_tests_dir = rtrim( sys_get_temp_dir(), '/\\' ) . '/wordpress-tests-lib';
 }
 
 if ( ! file_exists( $_tests_dir . '/includes/functions.php' ) ) {
-    echo "Could not find {$_tests_dir}/includes/functions.php. Run tests/bin/install-wp-tests.sh first.\n"; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CLI bootstrap output, not a WP runtime context.
-    exit( 1 );
+	echo "Could not find {$_tests_dir}/includes/functions.php. Run tests/bin/install-wp-tests.sh first.\n"; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CLI bootstrap output, not a WP runtime context.
+	exit( 1 );
 }
 
 require_once $_tests_dir . '/includes/functions.php';
@@ -27,11 +27,11 @@ require_once $_tests_dir . '/includes/functions.php';
  * Manually load the plugin (and its Tainacan dependency, if installed).
  */
 function _manually_load_plugin() {
-    $tainacan_main = dirname( __DIR__, 2 ) . '/tainacan/tainacan.php';
-    if ( file_exists( $tainacan_main ) ) {
-        require $tainacan_main;
-    }
-    require dirname( __DIR__ ) . '/tainacan-oai-pmh.php';
+	$tainacan_main = dirname( __DIR__, 2 ) . '/tainacan/tainacan.php';
+	if ( file_exists( $tainacan_main ) ) {
+		require $tainacan_main;
+	}
+	require dirname( __DIR__ ) . '/tainacan-oai-pmh.php';
 }
 tests_add_filter( 'muplugins_loaded', '_manually_load_plugin' );
 
