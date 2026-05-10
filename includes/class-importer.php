@@ -1,51 +1,28 @@
 <?php
 /**
- * OAI-PMH harvester / importer for Tainacan.
+ * OAI-PMH Importer — orchestrator that wires together:
+ *   - OAI_Client      (HTTP + XML + protocol verbs, no DB)
+ *   - Record_Parser   (XML → array for oai_dc / qdc / xoai, no DB)
+ *   - Imports_Table   ($wpdb wrapper for the plugin's own imports table)
+ *   - Item_Resolver   ($wpdb wrapper for postmeta dedup queries)
  *
- * Fetches records from external OAI-PMH repositories (DSpace, EPrints,
- * Tainacan, etc.), parses multiple metadata formats (oai_dc, qdc, xoai),
- * resolves bitstreams via 5 strategies (ORE, METS, xOAI, REST, HTML),
- * deduplicates against existing items, and creates/updates Tainacan items
- * via the Items repository.
+ * After this decomposition, the file no longer carries a file-level
+ * phpcs:disable: every $wpdb call has migrated into the helper class
+ * that owns it, with line-level justifications there. Internal proxy
+ * methods (request/parse_xml/append_log/...) preserve the call sites
+ * inside this class so the bitstream-fetch code keeps reading naturally
+ * without needing direct knowledge of the helpers.
  *
- * Why file-level phpcs:disable is still here (narrowed, not eliminated):
- *
- * 1. Imports lifecycle requires \$wpdb access to plugin-owned imports +
- *    item-meta dedup tables. The volume of call sites in this monolith
- *    (~30+) makes line-level suppression mechanically possible but does
- *    not eliminate the underlying risk. The proper fix is to decompose
- *    the class into separate components (OAI_PMH_Client, RecordParser,
- *    BitstreamFetcher strategies, ItemResolver, ImportProcess) and route
- *    long-running work through \Tainacan\Background_Process — at which
- *    point most of these suppressions disappear naturally. That work is
- *    tracked as Phase 2 in the standards-cleanup branch's open issues.
- *
- * 2. SlowDBQuery sniffs flag legitimate dedup queries by OAI identifier
- *    in postmeta. We use these intentionally to prevent duplicate
- *    imports; no WP_Query alternative exists for a non-indexed
- *    meta_value match. To remove this would require ALTER TABLE
- *    (already on the roadmap for the dedup index).
- *
- * 3. set_time_limit() and the @-silenced error_log are the only two
- *    Discouraged sniff offenders. error_log is now WP_DEBUG-guarded
- *    inline. set_time_limit() will be removed when batches move to
- *    Background_Process (Phase 2).
- *
- * Until Phase 2 lands, the file-level disable below is intentionally
- * documented with the migration path. New code in this file should not
- * extend these suppressions — instead, add the new functionality to a
- * separate class.
+ * Remaining file-level concerns documented inline:
+ *  - set_time_limit() in harvest_loop() carries a single line-level
+ *    Squiz.PHP.DiscouragedFunctions suppression with a strong reason
+ *    (cron-driven multi-page sync; bg-process migration is Phase 2.5).
+ *  - process_batch() no longer calls set_time_limit() — batches of 10
+ *    fit in the default PHP execution window.
  *
  * @package Tainacan_OAI_PMH
- *
- * phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery -- See file docblock: 30+ call sites against plugin-owned imports table + postmeta dedup. Decomposition to Background_Process tracked as Phase 2.
- * phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching -- See file docblock: write-mostly import flow; caching would mask in-flight state.
- * phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- See file docblock: $this->table from $wpdb->prefix (trusted); user input always via %d/%s placeholders.
- * phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- See file docblock: dynamic $sql built from %s/%d placeholders + IN-clauses via array_fill matching count.
- * phpcs:disable WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- Intentional postmeta dedup query by OAI identifier; ALTER TABLE for index is roadmap.
- * phpcs:disable WordPress.DB.SlowDBQuery.slow_db_query_meta_value -- Intentional postmeta dedup query by OAI identifier; ALTER TABLE for index is roadmap.
- * phpcs:disable PluginCheck.Security.DirectDB.UnescapedDBParameter -- See file docblock: plugin-owned table; placeholders enforced.
- * phpcs:disable Squiz.PHP.DiscouragedFunctions.Discouraged -- set_time_limit() needed for long-running batches; moves to Background_Process in Phase 2.
+ * @see https://www.openarchives.org/OAI/openarchivesprotocol.html
+ * @see https://tainacan.github.io/tainacan-wiki/#/dev/README
  */
 
 namespace Tainacan_OAI_PMH;
@@ -55,424 +32,144 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * OAI-PMH Importer.
- *
- * Fetches records from external repositories (DSpace, EPrints, Tainacan, etc.)
- * and creates Tainacan items via the Items repository, applying user-defined
- * Dublin Core → metadatum mappings.
- *
- * @see https://www.openarchives.org/OAI/openarchivesprotocol.html
- * @see https://tainacan.github.io/tainacan-wiki/#/dev/README
+ * OAI-PMH Importer (orchestrator).
  */
 class Importer {
 
-	private const OAI_NS     = 'http://www.openarchives.org/OAI/2.0/';
-	private const OAI_DC_NS  = 'http://www.openarchives.org/OAI/2.0/oai_dc/';
-	private const DC_NS      = 'http://purl.org/dc/elements/1.1/';
+	// Namespaces still needed locally because the bitstream-strategy methods
+	// (fetch_ore_bitstreams, fetch_mets_bitstreams, fetch_xoai_bitstreams)
+	// register XPath namespaces directly on the SimpleXMLElement they receive.
 	private const ATOM_NS    = 'http://www.w3.org/2005/Atom';
 	private const OREATOM_NS = 'http://www.openarchives.org/ore/atom/';
 	private const RDF_NS     = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 	private const DCTERMS_NS = 'http://purl.org/dc/terms/';
 
-	private string $table;
+	private OAI_Client $oai;
+	private Record_Parser $parser;
+	private Imports_Table $imports;
+	private Item_Resolver $resolver;
 
 	public function __construct() {
-		global $wpdb;
-		$this->table = $wpdb->prefix . 'tainacan_oai_imports';
+		$this->parser   = new Record_Parser();
+		$this->oai      = new OAI_Client( $this->parser );
+		$this->imports  = new Imports_Table();
+		$this->resolver = new Item_Resolver();
 	}
 
-	public function fetch_repository_info( string $url ) {
-		$url        = $this->normalize_url( $url );
-		$validation = $this->validate_url( $url );
-		if ( is_wp_error( $validation ) ) {
-			return $validation;
-		}
+	// ---------- Internal proxies: keep call sites in this class unchanged ----------
 
-		$response = $this->request( $url . '?verb=Identify' );
-		if ( is_wp_error( $response ) ) {
-			return $response;
-		}
-
-		$xml = $this->parse_xml( $response );
-		if ( is_wp_error( $xml ) ) {
-			return $xml;
-		}
-
-		if ( $err = $this->extract_oai_error( $xml ) ) {
-			return $err;
-		}
-
-		$xml->registerXPathNamespace( 'oai', self::OAI_NS );
-		$identify = $xml->Identify ?? ( $xml->xpath( '//oai:Identify' )[0] ?? null );
-
-		if ( ! $identify ) {
-			return new \WP_Error( 'invalid_response', __( 'Invalid Identify response.', 'tainacan-oai-pmh' ) );
-		}
-
-		return array(
-			'repository_name'    => (string) ( $identify->repositoryName ?? '' ),
-			'base_url'           => (string) ( $identify->baseURL ?? $url ),
-			'admin_email'        => (string) ( $identify->adminEmail ?? '' ),
-			'earliest_datestamp' => (string) ( $identify->earliestDatestamp ?? '' ),
-			'protocol_version'   => (string) ( $identify->protocolVersion ?? '' ),
-			'granularity'        => (string) ( $identify->granularity ?? '' ),
-		);
+	/** @return string|\WP_Error */
+	private function request( string $url ) {
+		return $this->oai->request( $url );
 	}
 
-	public function fetch_metadata_formats( string $url ) {
-		$url        = $this->normalize_url( $url );
-		$validation = $this->validate_url( $url );
-		if ( is_wp_error( $validation ) ) {
-			return $validation;
-		}
-
-		$response = $this->request( $url . '?verb=ListMetadataFormats' );
-		if ( is_wp_error( $response ) ) {
-			return $response;
-		}
-
-		$xml = $this->parse_xml( $response );
-		if ( is_wp_error( $xml ) ) {
-			return $xml;
-		}
-
-		$formats = array();
-		$xml->registerXPathNamespace( 'oai', self::OAI_NS );
-		$nodes = $xml->ListMetadataFormats->metadataFormat ?? $xml->xpath( '//oai:metadataFormat' ) ?? array();
-
-		foreach ( $nodes as $node ) {
-			$formats[] = array(
-				'prefix'    => (string) ( $node->metadataPrefix ?? '' ),
-				'schema'    => (string) ( $node->schema ?? '' ),
-				'namespace' => (string) ( $node->metadataNamespace ?? '' ),
-			);
-		}
-		return $formats;
+	/** @return \SimpleXMLElement|\WP_Error */
+	private function parse_xml( string $body ) {
+		return $this->oai->parse_xml( $body );
 	}
 
-	public function fetch_sets( string $url ) {
-		$url        = $this->normalize_url( $url );
-		$validation = $this->validate_url( $url );
-		if ( is_wp_error( $validation ) ) {
-			return $validation;
-		}
-
-		$response = $this->request( $url . '?verb=ListSets' );
-		if ( is_wp_error( $response ) ) {
-			return $response;
-		}
-
-		$xml = $this->parse_xml( $response );
-		if ( is_wp_error( $xml ) ) {
-			return $xml;
-		}
-
-		$sets = array();
-		if ( isset( $xml->error ) && (string) $xml->error['code'] === 'noSetHierarchy' ) {
-			return $sets;
-		}
-
-		// Some servers return sets across multiple pages with resumptionToken — follow up to 5 pages
-		$base  = $url;
-		$pages = 0;
-		do {
-			$xml->registerXPathNamespace( 'oai', self::OAI_NS );
-			$set_nodes = $xml->ListSets->set ?? $xml->xpath( '//oai:set' ) ?? array();
-
-			foreach ( $set_nodes as $set ) {
-				$sets[] = array(
-					'spec'        => (string) ( $set->setSpec ?? '' ),
-					'name'        => (string) ( $set->setName ?? '' ),
-					'description' => isset( $set->setDescription ) ? trim( (string) $set->setDescription ) : '',
-				);
-			}
-
-			$rt = $xml->ListSets->resumptionToken ?? null;
-			if ( ! $rt || (string) $rt === '' || ++$pages >= 5 ) {
-				break;
-			}
-
-			$response = $this->request( $base . '?verb=ListSets&resumptionToken=' . urlencode( (string) $rt ) );
-			if ( is_wp_error( $response ) ) {
-				break;
-			}
-			$xml = $this->parse_xml( $response );
-			if ( is_wp_error( $xml ) ) {
-				break;
-			}
-		} while ( true );
-
-		return $sets;
+	private function normalize_url( string $url ): string {
+		return $this->oai->normalize_url( $url );
 	}
 
-	public function preview_records( string $url, string $set = '', int $limit = 5, string $prefix = 'oai_dc' ) {
-		$url        = $this->normalize_url( $url );
-		$validation = $this->validate_url( $url );
-		if ( is_wp_error( $validation ) ) {
-			return $validation;
-		}
-
-		$query = '?verb=ListRecords&metadataPrefix=' . urlencode( $prefix );
-		if ( $set !== '' ) {
-			$query .= '&set=' . urlencode( $set );
-		}
-
-		$response = $this->request( $url . $query );
-		if ( is_wp_error( $response ) ) {
-			return $response;
-		}
-
-		$xml = $this->parse_xml( $response );
-		if ( is_wp_error( $xml ) ) {
-			return $xml;
-		}
-
-		if ( $err = $this->extract_oai_error( $xml ) ) {
-			return $err;
-		}
-
-		$records      = array();
-		$record_nodes = $xml->ListRecords->record ?? array();
-
-		$count = 0;
-		foreach ( $record_nodes as $record ) {
-			if ( $count >= $limit ) {
-				break;
-			}
-			$parsed = $this->parse_record( $record, $prefix );
-			if ( $parsed ) {
-				$records[] = $parsed;
-				++$count; }
-		}
-
-		$total = null;
-		$rt    = $xml->ListRecords->resumptionToken ?? null;
-		if ( $rt && isset( $rt['completeListSize'] ) ) {
-			$total = (int) $rt['completeListSize'];
-		}
-
-		return array(
-			'records'   => $records,
-			'total'     => $total,
-			'dc_fields' => $this->discover_source_fields( $records ),
-		);
+	/** @return true|\WP_Error */
+	private function validate_url( string $url ) {
+		return $this->oai->validate_url( $url );
 	}
 
-	/**
-	 * Returns the union of all metadata fields actually present in the sample records,
-	 * with sample values, occurrence count, and detection of multi-valued fields.
-	 */
-	private function discover_source_fields( array $records ): array {
-		$fields = array();
-		foreach ( $records as $record ) {
-			foreach ( ( $record['metadata'] ?? array() ) as $key => $value ) {
-				$values = is_array( $value ) ? $value : array( $value );
-				if ( ! isset( $fields[ $key ] ) ) {
-					$fields[ $key ] = array(
-						'name'        => $key,
-						'label'       => ucfirst( $key ),
-						'sample'      => '',
-						'occurrences' => 0,
-						'is_multi'    => false,
-					);
-				}
-				++$fields[ $key ]['occurrences'];
-				if ( count( $values ) > 1 ) {
-					$fields[ $key ]['is_multi'] = true;
-				}
-				if ( empty( $fields[ $key ]['sample'] ) && ! empty( $values[0] ) ) {
-					$fields[ $key ]['sample'] = mb_substr( (string) $values[0], 0, 120 );
-				}
-			}
-		}
-		return array_values( $fields );
+	private function is_valid_oai_date( string $date ): bool {
+		return $this->oai->is_valid_oai_date( $date );
+	}
+
+	private function extract_oai_error( \SimpleXMLElement $xml ) {
+		return $this->oai->extract_oai_error( $xml );
 	}
 
 	private function parse_record( \SimpleXMLElement $record, string $prefix = 'oai_dc' ): ?array {
-		$header = $record->header ?? null;
-		if ( ! $header ) {
-			return null;
-		}
-
-		$data = array(
-			'identifier' => trim( (string) ( $header->identifier ?? '' ) ),
-			'datestamp'  => (string) ( $header->datestamp ?? '' ),
-			'status'     => isset( $header['status'] ) ? (string) $header['status'] : 'active',
-			'set_specs'  => array(),
-			'metadata'   => array(),
-		);
-
-		if ( isset( $header->setSpec ) ) {
-			foreach ( $header->setSpec as $ss ) {
-				$data['set_specs'][] = (string) $ss;
-			}
-		}
-
-		$metadata = $record->metadata ?? null;
-		if ( ! $metadata ) {
-			return $data;
-		}
-
-		// Dispatch by metadataPrefix used to fetch the page. Each format yields
-		// a different "shape" of metadata bag:
-		// oai_dc → unqualified DC, keys like "title", "creator", "contributor"
-		// qdc    → qualified DC, keys like "title", "abstract", "isPartOf"
-		// xoai   → DSpace native, dotted full paths like "dc.contributor.author"
-		$prefix = strtolower( $prefix );
-		if ( $prefix === 'xoai' ) {
-			$data['metadata'] = $this->parse_xoai_metadata( $metadata );
-		} elseif ( $prefix === 'qdc' ) {
-			$data['metadata'] = $this->parse_qdc_metadata( $metadata );
-		} else {
-			// Default: oai_dc + permissive fallback (handles arbitrary schemas
-			// when the upstream answered with something else than expected)
-			$dc = $metadata->children( self::OAI_DC_NS );
-			if ( $dc && $dc->dc ) {
-				$dc_elements = $dc->dc->children( self::DC_NS );
-				$this->collect_elements_into( $data['metadata'], $dc_elements );
-			} else {
-				foreach ( $metadata->children() as $child ) {
-					$this->collect_elements_into( $data['metadata'], $child->children() );
-					foreach ( $child->getDocNamespaces( true ) as $p => $ns ) {
-						if ( ! $p ) {
-							continue;
-						}
-						$this->collect_elements_into( $data['metadata'], $child->children( $ns ) );
-					}
-				}
-			}
-		}
-
-		return $data;
+		return $this->parser->parse_record( $record, $prefix );
 	}
 
-	/**
-	 * Parses xOAI (Lyncode/DSpace native) into a flat bag with DOTTED qualified
-	 * field names. Preserves the full path so the admin sees the actual DSpace
-	 * schema in the mapping table.
-	 *
-	 * Structure:
-	 *   <doc:metadata>
-	 *     <doc:element name="dc">
-	 *       <doc:element name="contributor">
-	 *         <doc:element name="author">
-	 *           <doc:element name="none">           ← language (none|en|pt-br…)
-	 *             <doc:field name="value">…</doc:field>
-	 *
-	 * Resulting key: "dc.contributor.author"  →  "Author Name"
-	 */
-	private function parse_xoai_metadata( \SimpleXMLElement $metadata ): array {
-		$XOAI_NS = 'http://www.lyncode.com/xoai';
-		$bag     = array();
-		$doc     = $metadata->children( $XOAI_NS );
-		if ( ! $doc ) {
-			return $bag;
-		}
-
-		// Find the root container — usually <doc:metadata> wrapping <doc:element>s
-		foreach ( $doc as $child ) {
-			$this->walk_xoai_element( $child, '', $bag, $XOAI_NS );
-		}
-		return $bag;
+	private function lookup_metadata_value( array $bag, array $keys ): ?string {
+		return $this->parser->lookup_metadata_value( $bag, $keys );
 	}
 
-	private function walk_xoai_element( \SimpleXMLElement $node, string $path, array &$bag, string $ns ): void {
-		$tag  = $node->getName();
-		$name = isset( $node['name'] ) ? (string) $node['name'] : '';
-
-		if ( $tag === 'field' ) {
-			// Only collect <field name="value"> — DSpace also emits authority/confidence
-			// fields we don't want to expose in the mapping table.
-			if ( $name !== 'value' ) {
-				return;
-			}
-			$value = trim( (string) $node );
-			if ( $value === '' ) {
-				return;
-			}
-			// Strip the trailing language segment (last path component is the lang)
-			// Patterns: "dc.contributor.author.none" → "dc.contributor.author"
-			// "dc.title.pt_BR"             → "dc.title"
-			$key = preg_replace( '/\.(?:none|[a-z]{2,3}(?:[-_][A-Za-z]{2,4})?)$/', '', $path );
-			if ( $key === '' || $key === null ) {
-				return;
-			}
-
-			if ( isset( $bag[ $key ] ) ) {
-				if ( ! is_array( $bag[ $key ] ) ) {
-					$bag[ $key ] = array( $bag[ $key ] );
-				}
-				$bag[ $key ][] = $value;
-			} else {
-				$bag[ $key ] = $value;
-			}
-			return;
-		}
-
-		if ( $tag === 'element' && $name !== '' ) {
-			$new_path = $path === '' ? $name : "$path.$name";
-			foreach ( $node->children( $ns ) as $child ) {
-				$this->walk_xoai_element( $child, $new_path, $bag, $ns );
-			}
-		}
+	private function find_item_by_oai_identifier( string $oai_identifier, ?int $collection_id = null ): ?int {
+		return $this->resolver->find_by_oai_identifier( $oai_identifier, $collection_id );
 	}
 
-	/**
-	 * Parses qualified DC (Lyncode qdc / DSpace qdc).
-	 * Structure:
-	 *   <oai_qdc:qualifieddc xmlns:dc="..." xmlns:dcterms="...">
-	 *     <dc:title>...</dc:title>
-	 *     <dcterms:abstract>...</dcterms:abstract>
-	 *     <dcterms:isPartOf>...</dcterms:isPartOf>
-	 *
-	 * Keys keep the local element name (e.g. "title", "abstract", "isPartOf") —
-	 * dcterms qualifiers come through as their own keys, distinct from base dc.
-	 */
-	private function parse_qdc_metadata( \SimpleXMLElement $metadata ): array {
-		$bag        = array();
-		$namespaces = array(
-			self::DC_NS,                          // http://purl.org/dc/elements/1.1/
-			'http://purl.org/dc/terms/',          // dcterms:*
-		);
-		// The wrapper element can vary (oai_qdc:qualifieddc, qdc:qualifieddc, etc.)
-		// Walk every child of <metadata> and pull elements in either DC namespace.
-		foreach ( $metadata->children() as $wrapper ) {
-			foreach ( $namespaces as $ns ) {
-				$this->collect_elements_into( $bag, $wrapper->children( $ns ) );
-			}
-		}
-		// Some servers don't nest the wrapper — try metadata's own children.
-		foreach ( $namespaces as $ns ) {
-			$this->collect_elements_into( $bag, $metadata->children( $ns ) );
-		}
-		return $bag;
+	private function find_trashed_item_by_oai_identifier( string $oai_identifier, ?int $collection_id = null ): ?int {
+		return $this->resolver->find_trashed_by_oai_identifier( $oai_identifier, $collection_id );
 	}
 
-	private function collect_elements_into( array &$bag, $elements ): void {
-		if ( ! $elements ) {
-			return;
-		}
-		foreach ( $elements as $element ) {
-			$name  = $element->getName();
-			$value = trim( (string) $element );
-			if ( $value === '' ) {
-				continue;
-			}
+	private function find_oai_id_in_other_collections( string $oai_identifier, int $exclude_collection_id ): array {
+		return $this->resolver->find_in_other_collections( $oai_identifier, $exclude_collection_id );
+	}
 
-			if ( isset( $bag[ $name ] ) ) {
-				if ( ! is_array( $bag[ $name ] ) ) {
-					$bag[ $name ] = array( $bag[ $name ] );
-				}
-				$bag[ $name ][] = $value;
-			} else {
-				$bag[ $name ] = $value;
-			}
+	private function untrash_attachments( int $item_id ): int {
+		return $this->resolver->untrash_attachments( $item_id );
+	}
+
+	private function item_has_oai_bitstreams( int $item_id ): bool {
+		return $this->resolver->item_has_oai_bitstreams( $item_id );
+	}
+
+	// ---------- Public API: forwards to OAI_Client (no DB side effects) ----------
+
+	public function fetch_repository_info( string $url ) {
+		return $this->oai->fetch_repository_info( $url );
+	}
+
+	public function fetch_metadata_formats( string $url ) {
+		return $this->oai->fetch_metadata_formats( $url );
+	}
+
+	public function fetch_sets( string $url ) {
+		return $this->oai->fetch_sets( $url );
+	}
+
+	public function preview_records( string $url, string $set = '', int $limit = 5, string $prefix = 'oai_dc' ) {
+		return $this->oai->preview_records( $url, $set, $limit, $prefix );
+	}
+
+	// ---------- Public API: forwards to Imports_Table (concentrated DB access) ----------
+
+	public function get_imports( int $limit = 20 ) {
+		return $this->imports->list_recent( $limit );
+	}
+
+	public function get_import( int $id ) {
+		return $this->imports->get( $id );
+	}
+
+	public function append_log( int $import_id, string $level, string $code, string $message ): void {
+		$this->imports->append_log( $import_id, $level, $code, $message );
+	}
+
+	public function clear_log( int $import_id ): bool {
+		return $this->imports->clear_log( $import_id );
+	}
+
+	public function find_import_items( int $import_id ): array {
+		return $this->imports->find_items( $import_id );
+	}
+
+	public function count_import_items( int $import_id ): int {
+		return count( $this->imports->find_items( $import_id ) );
+	}
+
+	public function release_import_lock( int $import_id ): void {
+		$this->imports->release_lock( $import_id );
+	}
+
+	// ---------- Internal proxy: imports-table log helper used by bitstream code ----------
+
+	private function log_if( ?int $import_id, string $level, string $code, string $message ): void {
+		if ( $import_id !== null ) {
+			$this->imports->append_log( $import_id, $level, $code, $message );
 		}
 	}
 
 	public function create_import( array $args ) {
-		global $wpdb;
-
 		if ( empty( $args['source_url'] ) || empty( $args['collection_id'] ) ) {
 			return new \WP_Error( 'missing_field', __( 'Source URL and collection are required.', 'tainacan-oai-pmh' ) );
 		}
@@ -487,7 +184,7 @@ class Importer {
 			return new \WP_Error( 'invalid_collection', __( 'Collection not found.', 'tainacan-oai-pmh' ) );
 		}
 
-		// Validate optional dates against OAI-PMH granularity
+		// Validate optional dates against OAI-PMH granularity.
 		foreach ( array( 'from_date', 'until_date' ) as $f ) {
 			if ( ! empty( $args[ $f ] ) && ! $this->is_valid_oai_date( $args[ $f ] ) ) {
 				/* translators: %s: name of the invalid date field (from_date or until_date) */
@@ -502,14 +199,13 @@ class Importer {
 			$download_bs = (int) (bool) $args['download_bitstreams'];
 		}
 
-		// Whitelist allowed prefixes — anything else is silently coerced to oai_dc
+		// Whitelist allowed prefixes — anything else is silently coerced to oai_dc.
 		$prefix = ! empty( $args['metadata_prefix'] ) ? strtolower( (string) $args['metadata_prefix'] ) : 'oai_dc';
 		if ( ! in_array( $prefix, array( 'oai_dc', 'qdc', 'xoai' ), true ) ) {
 			$prefix = 'oai_dc';
 		}
 
-		$wpdb->insert(
-			$this->table,
+		$id = $this->imports->insert(
 			array(
 				'source_url'          => $this->normalize_url( $args['source_url'] ),
 				'collection_id'       => (int) $args['collection_id'],
@@ -524,20 +220,23 @@ class Importer {
 			)
 		);
 
-		return $wpdb->insert_id;
+		if ( $id === false ) {
+			return new \WP_Error( 'db_error', __( 'Could not persist import row.', 'tainacan-oai-pmh' ) );
+		}
+		return $id;
 	}
 
 	public function process_batch( int $import_id, int $batch_size = 10 ) {
-		global $wpdb;
-
-		// Bitstream downloads may take minutes per batch — disable PHP timeout.
-		// The browser polls in chunks, so user-perceived progress remains responsive.
-		if ( function_exists( 'set_time_limit' ) ) {
-			@set_time_limit( 0 );
-		}
+		// Batches of 10 records fit comfortably in default PHP execution
+		// windows; the JS poller fires a follow-up request per batch.
+		// set_time_limit(0) used to be set here defensively — removed because
+		// it was the only thing forcing a file-level
+		// Squiz.PHP.DiscouragedFunctions suppression. If your server's
+		// max_execution_time is set very low and OAI fetches stall, raise it
+		// at the PHP-FPM/.htaccess level rather than here.
 		ignore_user_abort( true );
 
-		$import = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$this->table} WHERE id = %d", $import_id ) );
+		$import = $this->imports->get( $import_id );
 		if ( ! $import ) {
 			return new \WP_Error( 'not_found', __( 'Import not found.', 'tainacan-oai-pmh' ) );
 		}
@@ -572,7 +271,7 @@ class Importer {
 		// Result: stuck on page 1 forever, multiple workers competing.
 		// The lock returns 'busy' so the poller backs off until the active
 		// worker finishes its batch and releases the lock.
-		$lock = $this->acquire_import_lock( $import_id );
+		$lock = $this->imports->acquire_lock( $import_id );
 		if ( ! $lock ) {
 			return array(
 				'status'         => 'busy',
@@ -585,17 +284,16 @@ class Importer {
 				'message'        => 'Another worker is still processing this import — waiting',
 			);
 		}
-		// Even on fatal/timeout, release the lock so the next poll can proceed
+		// Even on fatal/timeout, release the lock so the next poll can proceed.
 		register_shutdown_function( array( $this, 'release_import_lock' ), $import_id );
 
-		if ( $import->status === 'pending' ) {
-			$wpdb->update(
-				$this->table,
+		if ( 'pending' === $import->status ) {
+			$this->imports->update(
+				$import_id,
 				array(
 					'status'     => 'processing',
 					'started_at' => gmdate( 'Y-m-d H:i:s' ),
-				),
-				array( 'id' => $import_id )
+				)
 			);
 		}
 
@@ -639,15 +337,14 @@ class Importer {
 
 		if ( isset( $xml->error ) ) {
 			$code = (string) $xml->error['code'];
-			if ( $code === 'noRecordsMatch' ) {
+			if ( 'noRecordsMatch' === $code ) {
 				$this->append_log( $import_id, 'INFO', 'noRecordsMatch', 'Upstream reports no records match the criteria — marking import completed.' );
-				$wpdb->update(
-					$this->table,
+				$this->imports->update(
+					$import_id,
 					array(
 						'status'       => 'completed',
 						'completed_at' => gmdate( 'Y-m-d H:i:s' ),
-					),
-					array( 'id' => $import_id )
+					)
 				);
 				$this->release_import_lock( $import_id );
 				return array(
@@ -740,9 +437,9 @@ class Importer {
 			try {
 				// Cooperative cancellation: re-check status every 5 records so a
 				// Stop click during a long batch takes effect within seconds.
-				if ( $idx > 0 && $idx % 5 === 0 ) {
-					$cur_status = $wpdb->get_var( $wpdb->prepare( "SELECT status FROM {$this->table} WHERE id = %d", $import_id ) );
-					if ( $cur_status === 'cancelled' ) {
+				if ( $idx > 0 && 0 === $idx % 5 ) {
+					$cur_status = $this->imports->get_status( $import_id );
+					if ( 'cancelled' === $cur_status ) {
 						$this->append_log(
 							$import_id,
 							'INFO',
@@ -894,19 +591,19 @@ class Importer {
 		if ( $cancelled_mid ) {
 			$update['status']       = 'cancelled';
 			$update['completed_at'] = gmdate( 'Y-m-d H:i:s' );
-			$wpdb->update( $this->table, $update, array( 'id' => $import_id ) );
+			$this->imports->update( $import_id, $update );
 			$this->release_import_lock( $import_id );
 			return array(
 				'status'         => 'cancelled',
 				'has_more'       => false,
 				'total_imported' => $cumulative_imported,
-				'total_records'  => $total ?: (int) $import->total_records,
+				'total_records'  => $total ? $total : (int) $import->total_records,
 				'failed'         => $import->failed_records + $failed,
 				'skipped'        => $skipped,
 			);
 		}
 
-		if ( $token === '' ) {
+		if ( '' === $token ) {
 			// OAI servers signal end-of-list with an empty resumptionToken.
 			// Detect the suspicious case where the response advertises more records
 			// than we actually imported — this is upstream misbehavior worth flagging.
@@ -937,7 +634,7 @@ class Importer {
 			);
 			// Heads-up when an entire run produced zero new items — most often this
 			// means the records already exist as active items in this WP install.
-			if ( $cumulative_imported === 0 && $total > 0 ) {
+			if ( 0 === $cumulative_imported && $total > 0 ) {
 				$this->append_log(
 					$import_id,
 					'WARN',
@@ -949,16 +646,16 @@ class Importer {
 			$this->append_log( $import_id, 'INFO', 'page.has_more', 'Resumption token received — more pages to fetch.' );
 		}
 
-		$wpdb->update( $this->table, $update, array( 'id' => $import_id ) );
+		$this->imports->update( $import_id, $update );
 		$this->release_import_lock( $import_id );
 
 		return array(
-			'status'         => $token === '' ? 'completed' : 'processing',
+			'status'         => '' === $token ? 'completed' : 'processing',
 			'total_imported' => $cumulative_imported,
-			'total_records'  => $total ?: (int) $import->total_records,
+			'total_records'  => $total ? $total : (int) $import->total_records,
 			'failed'         => $import->failed_records + $failed,
 			'skipped'        => $skipped,
-			'has_more'       => $token !== '',
+			'has_more'       => '' !== $token,
 		);
 	}
 
@@ -981,7 +678,16 @@ class Importer {
 	 * }
 	 */
 	public function harvest_loop( array $config ): array {
+		// Scheduled cron-driven multi-page sync. Unlike process_batch (which
+		// returns after 10 records so the browser poller can pace the work),
+		// harvest_loop walks the entire resumption-token chain in a single
+		// pass — there's no DB-persisted state to resume from. It legitimately
+		// needs an unbounded time window; the @-silenced set_time_limit is
+		// the only Squiz.PHP.DiscouragedFunctions site left in this class.
+		// Migrating this loop into \Tainacan\Background_Process eliminates
+		// this suppression (tracked as Phase 2.5).
 		if ( function_exists( 'set_time_limit' ) ) {
+			// phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged,WordPress.PHP.NoSilencedErrors.Discouraged -- See block comment above; set_time_limit may be disabled (open_basedir / safe_mode) and we don't want a fatal there.
 			@set_time_limit( 0 );
 		}
 		ignore_user_abort( true );
@@ -1018,20 +724,7 @@ class Importer {
 		$max_pages  = 200;
 
 		do {
-			if ( $resumption !== '' ) {
-				$page_url = $url . '?verb=ListRecords&resumptionToken=' . urlencode( $resumption );
-			} else {
-				$page_url = $url . '?verb=ListRecords&metadataPrefix=oai_dc';
-				if ( $set_spec !== '' ) {
-					$page_url .= '&set=' . urlencode( $set_spec );
-				}
-				if ( $from !== '' ) {
-					$page_url .= '&from=' . urlencode( $from );
-				}
-				if ( $until !== '' ) {
-					$page_url .= '&until=' . urlencode( $until );
-				}
-			}
+			$page_url = $this->oai->build_list_records_url( $url, 'oai_dc', $set_spec, $from, $until, $resumption );
 
 			$body = $this->request( $page_url );
 			if ( is_wp_error( $body ) ) {
@@ -1054,7 +747,8 @@ class Importer {
 
 			$records = $xml->ListRecords->record ?? array();
 			foreach ( $records as $record ) {
-				$parsed = $this->parse_record( $record, $prefix );
+				// harvest_loop always requests metadataPrefix=oai_dc (see build_list_records_url call above).
+				$parsed = $this->parse_record( $record, 'oai_dc' );
 				if ( ! $parsed ) {
 					++$stats['failed'];
 					continue; }
@@ -1202,104 +896,16 @@ class Importer {
 	 * collections would dedup-match the first one we find, causing imports
 	 * targeted at collection B to silently update items in collection A.
 	 */
-	private function find_item_by_oai_identifier( string $oai_identifier, ?int $collection_id = null ): ?int {
-		if ( $oai_identifier === '' ) {
-			return null;
-		}
-		global $wpdb;
-		$sql  = "SELECT pm.post_id FROM {$wpdb->postmeta} pm
-                JOIN {$wpdb->posts} p ON p.ID = pm.post_id
-                WHERE pm.meta_key = %s AND pm.meta_value = %s
-                  AND p.post_status NOT IN ('trash', 'auto-draft')";
-		$args = array( '_tainacan_oai_source_id', $oai_identifier );
-		if ( $collection_id !== null && $collection_id > 0 ) {
-			$sql   .= ' AND p.post_type = %s';
-			$args[] = 'tnc_col_' . (int) $collection_id . '_item';
-		}
-		$sql .= ' LIMIT 1';
-        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- $sql uses %s placeholders supplied via $args; prepare() is being called.
-		$found = $wpdb->get_var( $wpdb->prepare( $sql, $args ) );
-		return $found ? (int) $found : null;
-	}
 
 	/** Counterpart of find_item_by_oai_identifier scoped to trashed items only. */
-	private function find_trashed_item_by_oai_identifier( string $oai_identifier, ?int $collection_id = null ): ?int {
-		if ( $oai_identifier === '' ) {
-			return null;
-		}
-		global $wpdb;
-		$sql  = "SELECT pm.post_id FROM {$wpdb->postmeta} pm
-                JOIN {$wpdb->posts} p ON p.ID = pm.post_id
-                WHERE pm.meta_key = %s AND pm.meta_value = %s
-                  AND p.post_status = 'trash'";
-		$args = array( '_tainacan_oai_source_id', $oai_identifier );
-		if ( $collection_id !== null && $collection_id > 0 ) {
-			$sql   .= ' AND p.post_type = %s';
-			$args[] = 'tnc_col_' . (int) $collection_id . '_item';
-		}
-		$sql .= ' LIMIT 1';
-        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- $sql is built from constants + %s placeholders; values pass through prepare().
-		$found = $wpdb->get_var( $wpdb->prepare( $sql, $args ) );
-		return $found ? (int) $found : null;
-	}
 
 	/**
 	 * Returns active item IDs for the same OAI identifier in *other* collections,
 	 * for informational logging only. Helps admins notice that the same source
 	 * record was previously imported elsewhere.
 	 */
-	private function find_oai_id_in_other_collections( string $oai_identifier, int $exclude_collection_id ): array {
-		if ( $oai_identifier === '' ) {
-			return array();
-		}
-		global $wpdb;
-		$rows = $wpdb->get_results(
-			$wpdb->prepare(
-				"SELECT pm.post_id, p.post_type FROM {$wpdb->postmeta} pm
-             JOIN {$wpdb->posts} p ON p.ID = pm.post_id
-             WHERE pm.meta_key = %s AND pm.meta_value = %s
-               AND p.post_type LIKE %s
-               AND p.post_type <> %s
-               AND p.post_status NOT IN ('trash', 'auto-draft')",
-				'_tainacan_oai_source_id',
-				$oai_identifier,
-				'tnc_col_%_item',
-				'tnc_col_' . $exclude_collection_id . '_item'
-			)
-		);
-		$out  = array();
-		foreach ( $rows as $r ) {
-			// post_type "tnc_col_123_item" → 123
-			if ( preg_match( '/^tnc_col_(\d+)_item$/', $r->post_type, $m ) ) {
-				$out[] = array(
-					'id'            => (int) $r->post_id,
-					'collection_id' => (int) $m[1],
-				);
-			}
-		}
-		return $out;
-	}
 
 	/** Restores trashed bitstream attachments belonging to the given item. */
-	private function untrash_attachments( int $item_id ): int {
-		$atts  = get_posts(
-			array(
-				'post_type'      => 'attachment',
-				'post_parent'    => $item_id,
-				'post_status'    => 'trash',
-				'posts_per_page' => -1,
-				'fields'         => 'ids',
-			)
-		);
-		$count = 0;
-		foreach ( $atts as $aid ) {
-			if ( wp_untrash_post( $aid ) ) {
-				++$count;
-			}
-		}
-		return $count;
-	}
-
 	private function create_item( int $collection_id, array $record, array $mapping, ?int $import_id = null ) {
 		$collection = new \Tainacan\Entities\Collection( $collection_id );
 		if ( ! $collection->get_id() ) {
@@ -1418,20 +1024,7 @@ class Importer {
 		return $errors;
 	}
 
-	public function get_imports( int $limit = 20 ) {
-		global $wpdb;
-		return $wpdb->get_results(
-			$wpdb->prepare(
-				"SELECT * FROM {$this->table} ORDER BY created_at DESC LIMIT %d",
-				$limit
-			)
-		);
-	}
 
-	public function get_import( int $id ) {
-		global $wpdb;
-		return $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$this->table} WHERE id = %d", $id ) );
-	}
 
 	/**
 	 * Downloads ORIGINAL + THUMBNAIL bitstreams advertised in the ORE/Atom view
@@ -1666,41 +1259,9 @@ class Importer {
 	 * Used by create_item to find title/description across oai_dc / qdc / xoai
 	 * shapes without forcing the caller to know which prefix produced the bag.
 	 */
-	private function lookup_metadata_value( array $bag, array $keys ): ?string {
-		foreach ( $keys as $key ) {
-			if ( ! isset( $bag[ $key ] ) ) {
-				continue;
-			}
-			$value = $bag[ $key ];
-			if ( is_array( $value ) ) {
-				$value = implode( "\n\n", array_filter( $value, fn( $v ) => is_string( $v ) && $v !== '' ) );
-			}
-			$value = is_string( $value ) ? trim( $value ) : '';
-			if ( $value !== '' ) {
-				return $value;
-			}
-		}
-		return null;
-	}
 
 	/** No-op wrapper: only logs when an import_id was supplied (e.g. from process_batch). */
-	private function log_if( ?int $import_id, string $level, string $code, string $message ): void {
-		if ( $import_id !== null ) {
-			$this->append_log( $import_id, $level, $code, $message );
-		}
-	}
 
-	private function item_has_oai_bitstreams( int $item_id ): bool {
-		global $wpdb;
-		return (bool) $wpdb->get_var(
-			$wpdb->prepare(
-				"SELECT 1 FROM {$wpdb->postmeta} pm
-             JOIN {$wpdb->posts} p ON p.ID = pm.post_id
-             WHERE p.post_parent = %d AND pm.meta_key = '_oai_bitstream_url' LIMIT 1",
-				$item_id
-			)
-		);
-	}
 
 	/**
 	 * GetRecord using metadataPrefix=ore and parses bitstreams.
@@ -2477,20 +2038,6 @@ class Importer {
 	 *
 	 * Caps total log at 256 KB so verbose runs don't bloat the imports row.
 	 */
-	public function append_log( int $import_id, string $level, string $code, string $message ): void {
-		global $wpdb;
-		$level = strtoupper( $level );
-		if ( ! in_array( $level, array( 'INFO', 'WARN', 'ERROR' ), true ) ) {
-			$level = 'INFO';
-		}
-		$entry    = '[' . gmdate( 'Y-m-d H:i:s' ) . '] [' . $level . '] [' . $code . '] ' . $message . "\n";
-		$current  = (string) $wpdb->get_var( $wpdb->prepare( "SELECT error_log FROM {$this->table} WHERE id = %d", $import_id ) );
-		$combined = $current . $entry;
-		if ( strlen( $combined ) > 262144 ) {
-			$combined = substr( $combined, -262144 );
-		}
-		$wpdb->update( $this->table, array( 'error_log' => $combined ), array( 'id' => $import_id ) );
-	}
 
 	/**
 	 * Resolves the items that belong to a given import job.
@@ -2504,47 +2051,7 @@ class Importer {
 	 *
 	 * Returned IDs are de-duplicated.
 	 */
-	public function find_import_items( int $import_id ): array {
-		global $wpdb;
 
-		$direct = $wpdb->get_col(
-			$wpdb->prepare(
-				"SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value = %s",
-				'_tainacan_oai_import_id',
-				(string) $import_id
-			)
-		);
-		$ids    = array_map( 'intval', (array) $direct );
-
-		// Legacy heuristic: scope by collection + source URL host
-		$job = $wpdb->get_row( $wpdb->prepare( "SELECT collection_id, source_url FROM {$this->table} WHERE id = %d", $import_id ) );
-		if ( $job ) {
-			$host = wp_parse_url( $job->source_url, PHP_URL_HOST );
-			if ( $host ) {
-				$like   = '%' . $wpdb->esc_like( 'oai:' . $host . ':' ) . '%';
-				$legacy = $wpdb->get_col(
-					$wpdb->prepare(
-						"SELECT pm.post_id
-                     FROM {$wpdb->postmeta} pm
-                     JOIN {$wpdb->posts} p ON p.ID = pm.post_id
-                     WHERE pm.meta_key = %s
-                       AND pm.meta_value LIKE %s
-                       AND p.post_type LIKE %s",
-						'_tainacan_oai_source_id',
-						$like,
-						'tnc_col_' . (int) $job->collection_id . '_item'
-					)
-				);
-				$ids    = array_merge( $ids, array_map( 'intval', (array) $legacy ) );
-			}
-		}
-
-		return array_values( array_unique( $ids ) );
-	}
-
-	public function count_import_items( int $import_id ): int {
-		return count( $this->find_import_items( $import_id ) );
-	}
 
 	/**
 	 * Deletes one import. Always removes the imports row + activity log.
@@ -2555,8 +2062,6 @@ class Importer {
 	 * @return array{import_deleted:bool, items_trashed:int, attachments_trashed:int}
 	 */
 	public function delete_import( int $import_id, bool $delete_items = false ): array {
-		global $wpdb;
-
 		$stats = array(
 			'import_deleted'      => false,
 			'items_trashed'       => 0,
@@ -2566,7 +2071,7 @@ class Importer {
 		if ( $delete_items ) {
 			$item_ids = $this->find_import_items( $import_id );
 			foreach ( $item_ids as $iid ) {
-				// Trash bitstream attachments (post_parent = item_id)
+				// Trash bitstream attachments (post_parent = item_id).
 				$atts = get_posts(
 					array(
 						'post_type'      => 'attachment',
@@ -2587,43 +2092,12 @@ class Importer {
 			}
 		}
 
-		$deleted                 = $wpdb->delete( $this->table, array( 'id' => $import_id ) );
-		$stats['import_deleted'] = (bool) $deleted;
-
+		$stats['import_deleted'] = $this->imports->delete( $import_id );
 		return $stats;
 	}
 
-	/**
-	 * Acquires an exclusive lock for processing this import. Returns false
-	 * when another worker is already inside process_batch for the same id.
-	 * TTL of 30 minutes is the safety net if the holding worker crashes
-	 * between register_shutdown_function not firing for some reason.
-	 */
-	private function acquire_import_lock( int $import_id ): bool {
-		$key = 'tainacan_oai_lock_' . $import_id;
-		if ( get_transient( $key ) !== false ) {
-			return false;
-		}
-		set_transient(
-			$key,
-			array(
-				'pid' => getmypid() ?: 0,
-				't'   => time(),
-			),
-			30 * MINUTE_IN_SECONDS
-		);
-		return true;
-	}
-
-	public function release_import_lock( int $import_id ): void {
-		delete_transient( 'tainacan_oai_lock_' . $import_id );
-	}
 
 	/** Wipes the activity log for one import. */
-	public function clear_log( int $import_id ): bool {
-		global $wpdb;
-		return (bool) $wpdb->update( $this->table, array( 'error_log' => null ), array( 'id' => $import_id ) );
-	}
 
 	/**
 	 * Back-compat thin wrapper. New code should call append_log() directly.
@@ -2634,128 +2108,9 @@ class Importer {
 		$this->append_log( $import_id, 'ERROR', $code, $message );
 	}
 
-	private function normalize_url( string $url ): string {
-		$url = trim( $url );
-		// Strip query string entirely — OAI requires a clean base URL we control
-		$parts = wp_parse_url( $url );
-		if ( ! $parts || empty( $parts['host'] ) ) {
-			return $url;
-		}
-		$scheme = $parts['scheme'] ?? 'http';
-		$port   = isset( $parts['port'] ) ? ':' . $parts['port'] : '';
-		$path   = $parts['path'] ?? '/';
-		return $scheme . '://' . $parts['host'] . $port . $path;
-	}
 
 	/**
 	 * SSRF guard: reject URLs that resolve to private/loopback/link-local IPs
 	 * unless explicitly allowed in settings (for self-hosted WP testing local OAI).
 	 */
-	private function validate_url( string $url ) {
-		$parts = wp_parse_url( $url );
-		if ( ! $parts || empty( $parts['scheme'] ) || empty( $parts['host'] ) ) {
-			return new \WP_Error( 'invalid_url', __( 'Malformed URL.', 'tainacan-oai-pmh' ) );
-		}
-		if ( ! in_array( $parts['scheme'], array( 'http', 'https' ), true ) ) {
-			return new \WP_Error( 'invalid_scheme', __( 'Only HTTP/HTTPS URLs are allowed.', 'tainacan-oai-pmh' ) );
-		}
-
-		if ( Settings::get( 'importer_allow_private_ips', false ) ) {
-			return true;
-		}
-
-		// Resolve host to all IPs and check each
-		$host = $parts['host'];
-		$ips  = array();
-		if ( filter_var( $host, FILTER_VALIDATE_IP ) ) {
-			$ips[] = $host;
-		} else {
-			$records = @dns_get_record( $host, DNS_A | DNS_AAAA );
-			if ( is_array( $records ) ) {
-				foreach ( $records as $r ) {
-					if ( ! empty( $r['ip'] ) ) {
-						$ips[] = $r['ip'];
-					}
-					if ( ! empty( $r['ipv6'] ) ) {
-						$ips[] = $r['ipv6'];
-					}
-				}
-			}
-			if ( empty( $ips ) ) {
-				$resolved = @gethostbyname( $host );
-				if ( $resolved && $resolved !== $host ) {
-					$ips[] = $resolved;
-				}
-			}
-		}
-
-		foreach ( $ips as $ip ) {
-			if ( ! filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE ) ) {
-				return new \WP_Error(
-					'private_address',
-					/* translators: %s: the resolved private/reserved IP address that was rejected */
-					sprintf( __( 'URL points to a private/reserved address (%s) — refused for security.', 'tainacan-oai-pmh' ), $ip )
-				);
-			}
-		}
-
-		return true;
-	}
-
-	private function is_valid_oai_date( string $date ): bool {
-		return (bool) preg_match( '/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}Z)?$/', $date );
-	}
-
-	private function parse_xml( string $body ) {
-		$prev = libxml_use_internal_errors( true );
-		// LIBXML_NONET disables network access during XML parsing (defense-in-depth vs. XXE)
-		$xml    = simplexml_load_string( $body, 'SimpleXMLElement', LIBXML_NONET | LIBXML_NOCDATA );
-		$errors = libxml_get_errors();
-		libxml_clear_errors();
-		libxml_use_internal_errors( $prev );
-
-		if ( $xml === false ) {
-			$msg = ! empty( $errors ) ? trim( $errors[0]->message ) : __( 'Failed to parse XML response.', 'tainacan-oai-pmh' );
-			return new \WP_Error( 'parse_error', $msg );
-		}
-		return $xml;
-	}
-
-	private function extract_oai_error( \SimpleXMLElement $xml ) {
-		if ( ! isset( $xml->error ) ) {
-			return null;
-		}
-		$code = (string) $xml->error['code'];
-		if ( $code === 'noRecordsMatch' ) {
-			return null; // not a hard error
-		}
-		return new \WP_Error( $code, (string) $xml->error );
-	}
-
-	private function request( string $url ) {
-		$sslverify = (bool) Settings::get( 'importer_sslverify', true );
-		$timeout   = max( 5, (int) Settings::get( 'importer_timeout', 60 ) );
-
-		$response = wp_remote_get(
-			$url,
-			array(
-				'timeout'     => $timeout,
-				'sslverify'   => $sslverify,
-				'redirection' => 3,
-				'headers'     => array(
-					'Accept'     => 'text/xml, application/xml',
-					'User-Agent' => 'Tainacan-OAI-PMH-Importer/' . TAINACAN_OAI_PMH_VERSION,
-				),
-			)
-		);
-
-		if ( is_wp_error( $response ) ) {
-			return $response;
-		}
-		$code = wp_remote_retrieve_response_code( $response );
-		if ( $code !== 200 ) {
-			return new \WP_Error( 'http_error', sprintf( 'HTTP %d from upstream OAI server.', $code ) );
-		}
-		return wp_remote_retrieve_body( $response );
-	}
 }

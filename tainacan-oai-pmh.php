@@ -44,7 +44,9 @@ add_action(
 			return;
 		}
 
-		// Load dependencies
+		// Load dependencies. Order matters: helper classes (Record_Parser,
+		// OAI_Client, Imports_Table, Item_Resolver) must come before the
+		// Importer facade that wires them together.
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-activator.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-settings.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-cache.php';
@@ -53,6 +55,10 @@ add_action(
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-xml-generator.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-rest-controller.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-validator.php';
+		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-record-parser.php';
+		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-oai-client.php';
+		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-imports-table.php';
+		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-item-resolver.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-importer.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-metadata-mapper.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-rate-limiter.php';
