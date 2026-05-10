@@ -1,9 +1,15 @@
 <?php
 /**
- * phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery
- * phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching
- * phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+ * Scheduled OAI-PMH harvest sources.
+ *
+ * Each source is a saved harvester configuration (URL + collection + mapping
+ * + cadence) re-run by WP-Cron. All persistence targets a plugin-owned table
+ * (`{$wpdb->prefix}tainacan_oai_sources`) with no WP_Query equivalent — each
+ * direct \$wpdb call carries a specific line-level justification.
+ *
+ * @package Tainacan_OAI_PMH
  */
+
 namespace Tainacan_OAI_PMH;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -79,7 +85,8 @@ class Harvester {
 		}
 
 		$now = gmdate( 'Y-m-d H:i:s' );
-		$ok  = $wpdb->insert(
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned sources table; $wpdb->insert() escapes values; caching would mask the write.
+		$ok = $wpdb->insert(
 			$this->table,
 			array_merge(
 				$clean,
@@ -90,8 +97,8 @@ class Harvester {
 				)
 			)
 		);
-		if ( $ok === false ) {
-			return new \WP_Error( 'db_error', $wpdb->last_error ?: 'Insert failed.' );
+		if ( false === $ok ) {
+			return new \WP_Error( 'db_error', $wpdb->last_error ? $wpdb->last_error : 'Insert failed.' );
 		}
 
 		$id = (int) $wpdb->insert_id;
@@ -115,9 +122,10 @@ class Harvester {
 		}
 
 		$clean['updated_at'] = gmdate( 'Y-m-d H:i:s' );
-		$ok                  = $wpdb->update( $this->table, $clean, array( 'id' => $id ) );
-		if ( $ok === false ) {
-			return new \WP_Error( 'db_error', $wpdb->last_error ?: 'Update failed.' );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned sources table; $wpdb->update() escapes values; caching would mask the write.
+		$ok = $wpdb->update( $this->table, $clean, array( 'id' => $id ) );
+		if ( false === $ok ) {
+			return new \WP_Error( 'db_error', $wpdb->last_error ? $wpdb->last_error : 'Update failed.' );
 		}
 
 		// Reflect schedule/active changes in cron
@@ -131,28 +139,33 @@ class Harvester {
 	public function delete( int $id ): bool {
 		global $wpdb;
 		$this->unschedule( $id );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned sources table; $wpdb->delete() escapes values; caching would mask the write.
 		return (bool) $wpdb->delete( $this->table, array( 'id' => $id ) );
 	}
 
 	/** Wipes the activity log for a single source. */
 	public function clear_log( int $id ): bool {
 		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned sources table; $wpdb->update() escapes values; caching would mask the write.
 		return (bool) $wpdb->update( $this->table, array( 'error_log' => null ), array( 'id' => $id ) );
 	}
 
 	/** Wipes the activity log for every source. */
 	public function clear_all_logs(): int {
 		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned sources table; constant UPDATE statement; $this->table from $wpdb->prefix.
 		return (int) $wpdb->query( "UPDATE {$this->table} SET error_log = NULL" );
 	}
 
 	public function get( int $id ) {
 		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned sources table; $this->table from $wpdb->prefix; ID via %d placeholder.
 		return $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$this->table} WHERE id = %d", $id ) );
 	}
 
 	public function get_all(): array {
 		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned sources table; constant SELECT; $this->table from $wpdb->prefix; admin UI only — caching would mask manual edits.
 		$rows = $wpdb->get_results( "SELECT * FROM {$this->table} ORDER BY label ASC" );
 		return is_array( $rows ) ? $rows : array();
 	}
@@ -262,6 +275,7 @@ class Harvester {
 		}
 
 		$start = microtime( true );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned sources table; status flip; $wpdb->update() escapes values.
 		$wpdb->update(
 			$this->table,
 			array(
@@ -271,11 +285,12 @@ class Harvester {
 			array( 'id' => $id )
 		);
 
-		$config = array(
+		$mapping_unserialized = maybe_unserialize( $source->metadata_mapping );
+		$config               = array(
 			'source_url'          => $source->source_url,
 			'set_spec'            => (string) ( $source->set_spec ?? '' ),
 			'collection_id'       => (int) $source->collection_id,
-			'metadata_mapping'    => maybe_unserialize( $source->metadata_mapping ) ?: array(),
+			'metadata_mapping'    => is_array( $mapping_unserialized ) ? $mapping_unserialized : array(),
 			'download_bitstreams' => (bool) $source->download_bitstreams,
 			'from'                => $source->last_datestamp ? (string) $source->last_datestamp : '',
 		);
@@ -371,14 +386,14 @@ class Harvester {
 			'items_deleted'    => $source->items_deleted + $stats['deleted'],
 		);
 
-		if ( $status === 'success' ) {
+		if ( 'success' === $status ) {
 			$update['last_success_at'] = gmdate( 'Y-m-d H:i:s' );
-			// Advance the watermark so the next run only fetches newer changes
 			if ( ! empty( $stats['last_datestamp'] ) ) {
 				$update['last_datestamp'] = $stats['last_datestamp'];
 			}
 		}
 
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned sources table; final harvest summary write; $wpdb->update() escapes values.
 		$wpdb->update( $this->table, $update, array( 'id' => $id ) );
 		return $stats;
 	}
