@@ -1,28 +1,29 @@
 <?php
 /**
+ * Main plugin orchestrator. Extends \Tainacan\Pages to register the admin
+ * page and wire up the (many) AJAX handlers that drive the OAI-PMH UI.
+ *
+ * Nonce verification limitation (the only remaining file-level suppression):
+ * every privileged AJAX handler in this class calls \$this->authorize_ajax()
+ * as its first statement; that helper invokes check_ajax_referer() before
+ * any \$_POST is read. PHPCS does not statically trace helper calls, so it
+ * flags every subsequent \$_POST access as NonceVerification.* even though
+ * the nonce IS verified. Inlining check_ajax_referer() at the top of each
+ * of ~25 handlers would be the only way to fully remove this suppression;
+ * the better long-term path is decomposing the AJAX surface into a
+ * dedicated controller class, which is tracked as a follow-up. Until that
+ * lands, the suppression below is honest about the static-analysis
+ * limitation rather than masking a real risk.
+ *
+ * All \$wpdb access (formerly file-level-suppressed) is now line-level
+ * with specific justifications.
+ *
  * @package Tainacan_OAI_PMH
  *
- * Plugin Check / phpcs file-level suppressions:
- *  - Every privileged AJAX handler in this class begins with $this->authorize_ajax(),
- *    which calls check_ajax_referer('tainacan_oai_nonce','nonce'). PHPCS doesn't
- *    trace into helpers, so it flags every $_POST access as
- *    NonceVerification.Missing/Recommended even though the nonce IS verified.
- *  - We also read $_POST without explicit unslash() in places where we then
- *    apply esc_url_raw / sanitize_text_field / absint / json_decode, all of
- *    which handle escape/sanitize. Those checks are explicit suppressions.
- *  - A handful of AJAX handlers do direct $wpdb writes against the plugin's
- *    custom imports table (status flips on Stop, log fetches). Those use a
- *    local $table variable composed from $wpdb->prefix, never user input.
- *
- * phpcs:disable WordPress.Security.NonceVerification.Missing
- * phpcs:disable WordPress.Security.NonceVerification.Recommended
- * phpcs:disable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
- * phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound
- * phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery
- * phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching
- * phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
- * phpcs:disable PluginCheck.Security.DirectDB.UnescapedDBParameter
+ * phpcs:disable WordPress.Security.NonceVerification.Missing -- See class docblock: every AJAX entrypoint calls $this->authorize_ajax() → check_ajax_referer() before reading $_POST. PHPCS cannot trace this through helpers.
+ * phpcs:disable WordPress.Security.NonceVerification.Recommended -- See class docblock: every AJAX entrypoint calls $this->authorize_ajax() → check_ajax_referer() before reading $_POST. PHPCS cannot trace this through helpers.
  */
+
 namespace Tainacan_OAI_PMH;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -429,10 +430,11 @@ class Plugin extends \Tainacan\Pages {
 
 	public function ajax_start_import() {
 		$this->authorize_ajax();
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Raw JSON string is fed directly into json_decode() + is_array() check below; treating as a string before decode is the canonical handling.
 		$mapping_raw = isset( $_POST['metadata_mapping'] )
 			? wp_unslash( $_POST['metadata_mapping'] )
 			: '';
-		$mapping     = $mapping_raw !== '' ? json_decode( $mapping_raw, true ) : array();
+		$mapping     = '' !== $mapping_raw ? json_decode( $mapping_raw, true ) : array();
 		if ( ! is_array( $mapping ) ) {
 			$mapping = array();
 		}
@@ -485,6 +487,7 @@ class Plugin extends \Tainacan\Pages {
 			wp_send_json_error( array( 'message' => __( 'Invalid import ID.', 'tainacan-oai-pmh' ) ) );
 		}
 		$table = $wpdb->prefix . 'tainacan_oai_imports';
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned imports table; status flip on user Stop action; $wpdb->update() escapes values; caching would mask the write.
 		$wpdb->update( $table, array( 'status' => 'cancelled' ), array( 'id' => $import_id ) );
 
 		// Also release any stale concurrency lock so a stuck import can be
@@ -520,8 +523,9 @@ class Plugin extends \Tainacan\Pages {
 		if ( ! $collection_id ) {
 			wp_send_json_error( array( 'message' => __( 'Collection ID required.', 'tainacan-oai-pmh' ) ) );
 		}
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Raw JSON string is fed directly into json_decode() + is_array() check below; treating as a string before decode is the canonical handling.
 		$source_raw    = isset( $_POST['source_fields'] ) ? wp_unslash( $_POST['source_fields'] ) : '';
-		$source_fields = $source_raw !== '' ? json_decode( $source_raw, true ) : array();
+		$source_fields = '' !== $source_raw ? json_decode( $source_raw, true ) : array();
 		if ( ! is_array( $source_fields ) ) {
 			$source_fields = array();
 		}
@@ -558,9 +562,10 @@ class Plugin extends \Tainacan\Pages {
 	 */
 	public function ajax_save_harvest_source() {
 		$this->authorize_ajax();
-		$id          = absint( $_POST['id'] ?? 0 );
+		$id = absint( $_POST['id'] ?? 0 );
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Raw JSON string is fed directly into json_decode() + is_array() check below; treating as a string before decode is the canonical handling.
 		$mapping_raw = isset( $_POST['metadata_mapping'] ) ? wp_unslash( $_POST['metadata_mapping'] ) : '';
-		$mapping     = $mapping_raw !== '' ? json_decode( $mapping_raw, true ) : array();
+		$mapping     = '' !== $mapping_raw ? json_decode( $mapping_raw, true ) : array();
 		if ( ! is_array( $mapping ) ) {
 			$mapping = array();
 		}
@@ -730,7 +735,8 @@ class Plugin extends \Tainacan\Pages {
 		$id = absint( $_POST['import_id'] ?? 0 );
 		global $wpdb;
 		$table = $wpdb->prefix . 'tainacan_oai_imports';
-		$log   = $wpdb->get_var( $wpdb->prepare( "SELECT error_log FROM $table WHERE id = %d", $id ) );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned imports table; $table from $wpdb->prefix; id via %d placeholder; live log — caching would mask incremental writes.
+		$log = $wpdb->get_var( $wpdb->prepare( "SELECT error_log FROM $table WHERE id = %d", $id ) );
 		wp_send_json_success( array( 'log' => (string) $log ) );
 	}
 
