@@ -1,8 +1,15 @@
 <?php
 /**
- * phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery
- * phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching
+ * OAI-PMH data provider: maps Tainacan entities to OAI-PMH protocol arrays
+ * (Identify, ListSets, GetRecord, etc.).
+ *
+ * Most data fetching is delegated to Tainacan repositories. The single direct
+ * $wpdb access (earliestDatestamp aggregate) is justified at the call site;
+ * the previous file-level phpcs:disable is gone.
+ *
+ * @package Tainacan_OAI_PMH
  */
+
 namespace Tainacan_OAI_PMH;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -48,11 +55,13 @@ class Data_Provider {
 
 	private function get_earliest_datestamp() {
 		global $wpdb;
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- MIN() aggregate over $wpdb->posts; cannot be expressed via WP_Query without loading every post; constant predicates; no user input.
 		$earliest = $wpdb->get_var(
 			"SELECT MIN(post_date_gmt) FROM {$wpdb->posts}
              WHERE post_type LIKE 'tnc_col_%_item' AND post_status IN ('publish', 'private')
                 AND post_date_gmt > '1970-01-01 00:00:00'"
 		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
 		if ( $earliest ) {
 			return gmdate( 'Y-m-d\TH:i:s\Z', strtotime( $earliest . ' UTC' ) );
 		}
@@ -106,7 +115,10 @@ class Data_Provider {
 		$collection = $item->get_collection();
 		return array(
 			'identifier' => $this->build_identifier( $item->get_id() ),
-			'datestamp'  => gmdate( 'Y-m-d\TH:i:s\Z', strtotime( $item->get_modification_date() ?: $item->get_creation_date() ) ),
+			'datestamp'  => gmdate(
+				'Y-m-d\TH:i:s\Z',
+				strtotime( $item->get_modification_date() ? $item->get_modification_date() : $item->get_creation_date() )
+			),
 			'setSpec'    => $collection ? (string) $collection->get_id() : null,
 			'status'     => $item->get_status(),
 			'metadata'   => $this->get_item_dc( $item ),
