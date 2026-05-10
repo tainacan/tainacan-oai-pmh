@@ -1,21 +1,53 @@
 <?php
 /**
- * Plugin Check / phpcs suppressions: imports row + postmeta dedup require
- * direct $wpdb access against custom + WP core tables. set_time_limit() is
- * needed because each batch can spawn dozens of HTTP fetches (ORE, METS,
- * xOAI, REST, HTML, bitstream downloads) and we don't want PHP to timeout
- * mid-batch.
+ * OAI-PMH harvester / importer for Tainacan.
  *
- * phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery
- * phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching
- * phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
- * phpcs:disable WordPress.DB.PreparedSQL.NotPrepared
- * phpcs:disable WordPress.DB.SlowDBQuery.slow_db_query_meta_key
- * phpcs:disable WordPress.DB.SlowDBQuery.slow_db_query_meta_value
- * phpcs:disable WordPress.PHP.DevelopmentFunctions.error_log_error_log
- * phpcs:disable PluginCheck.Security.DirectDB.UnescapedDBParameter
- * phpcs:disable Squiz.PHP.DiscouragedFunctions.Discouraged
+ * Fetches records from external OAI-PMH repositories (DSpace, EPrints,
+ * Tainacan, etc.), parses multiple metadata formats (oai_dc, qdc, xoai),
+ * resolves bitstreams via 5 strategies (ORE, METS, xOAI, REST, HTML),
+ * deduplicates against existing items, and creates/updates Tainacan items
+ * via the Items repository.
+ *
+ * Why file-level phpcs:disable is still here (narrowed, not eliminated):
+ *
+ * 1. Imports lifecycle requires \$wpdb access to plugin-owned imports +
+ *    item-meta dedup tables. The volume of call sites in this monolith
+ *    (~30+) makes line-level suppression mechanically possible but does
+ *    not eliminate the underlying risk. The proper fix is to decompose
+ *    the class into separate components (OAI_PMH_Client, RecordParser,
+ *    BitstreamFetcher strategies, ItemResolver, ImportProcess) and route
+ *    long-running work through \Tainacan\Background_Process — at which
+ *    point most of these suppressions disappear naturally. That work is
+ *    tracked as Phase 2 in the standards-cleanup branch's open issues.
+ *
+ * 2. SlowDBQuery sniffs flag legitimate dedup queries by OAI identifier
+ *    in postmeta. We use these intentionally to prevent duplicate
+ *    imports; no WP_Query alternative exists for a non-indexed
+ *    meta_value match. To remove this would require ALTER TABLE
+ *    (already on the roadmap for the dedup index).
+ *
+ * 3. set_time_limit() and the @-silenced error_log are the only two
+ *    Discouraged sniff offenders. error_log is now WP_DEBUG-guarded
+ *    inline. set_time_limit() will be removed when batches move to
+ *    Background_Process (Phase 2).
+ *
+ * Until Phase 2 lands, the file-level disable below is intentionally
+ * documented with the migration path. New code in this file should not
+ * extend these suppressions — instead, add the new functionality to a
+ * separate class.
+ *
+ * @package Tainacan_OAI_PMH
+ *
+ * phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery -- See file docblock: 30+ call sites against plugin-owned imports table + postmeta dedup. Decomposition to Background_Process tracked as Phase 2.
+ * phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching -- See file docblock: write-mostly import flow; caching would mask in-flight state.
+ * phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- See file docblock: $this->table from $wpdb->prefix (trusted); user input always via %d/%s placeholders.
+ * phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- See file docblock: dynamic $sql built from %s/%d placeholders + IN-clauses via array_fill matching count.
+ * phpcs:disable WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- Intentional postmeta dedup query by OAI identifier; ALTER TABLE for index is roadmap.
+ * phpcs:disable WordPress.DB.SlowDBQuery.slow_db_query_meta_value -- Intentional postmeta dedup query by OAI identifier; ALTER TABLE for index is roadmap.
+ * phpcs:disable PluginCheck.Security.DirectDB.UnescapedDBParameter -- See file docblock: plugin-owned table; placeholders enforced.
+ * phpcs:disable Squiz.PHP.DiscouragedFunctions.Discouraged -- set_time_limit() needed for long-running batches; moves to Background_Process in Phase 2.
  */
+
 namespace Tainacan_OAI_PMH;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -1335,8 +1367,11 @@ class Importer {
 		if ( ! empty( $mapping ) ) {
 			$errors = $this->apply_mapping( $item, $record['metadata'], $mapping );
 			if ( ! empty( $errors ) ) {
-				// Mapping errors are non-fatal — log them but consider the item imported
-				error_log( '[Tainacan OAI Importer] Item ' . $item->get_id() . ' mapping warnings: ' . implode( '; ', $errors ) );
+				// Mapping errors are non-fatal — log them but consider the item imported.
+				if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+					// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Guarded by WP_DEBUG; surfaces only in dev to surface mapping drift in OAI sources.
+					error_log( '[Tainacan OAI Importer] Item ' . $item->get_id() . ' mapping warnings: ' . implode( '; ', $errors ) );
+				}
 			}
 		}
 
