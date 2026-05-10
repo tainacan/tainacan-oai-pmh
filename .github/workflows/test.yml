@@ -1,0 +1,118 @@
+name: Test & Lint
+
+on:
+  push:
+    branches:
+      - main
+      - 'release/**'
+      - 'refactor/**'
+      - 'feature/**'
+      - 'fix/**'
+    paths-ignore:
+      - '**.md'
+      - '**.txt'
+      - '/assets/images/**'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - '**.txt'
+      - '/assets/images/**'
+  workflow_dispatch:
+
+jobs:
+  phpcs:
+    name: PHPCS (WPCS strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          tools: composer:v2, cs2pr
+          coverage: none
+
+      - name: Cache Composer
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: ${{ runner.os }}-composer-${{ hashFiles('composer.json') }}
+
+      - name: Install dev dependencies
+        run: composer install --no-progress --prefer-dist
+
+      - name: Run PHPCS
+        run: vendor/bin/phpcs --standard=phpcs.xml.dist --report=checkstyle | cs2pr
+
+  phpunit:
+    name: PHPUnit (PHP ${{ matrix.php }}, WP ${{ matrix.wordpress }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: [ '8.1', '8.3' ]
+        wordpress: [ 'latest' ]
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: wordpress_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: composer:v2, wp-cli
+          extensions: mysqli, xml, mbstring, simplexml, curl
+          coverage: none
+
+      - name: Install dev dependencies
+        run: composer install --no-progress --prefer-dist
+
+      - name: Install WordPress test suite
+        run: |
+          chmod +x tests/bin/install-wp-tests.sh
+          tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 ${{ matrix.wordpress }}
+
+      - name: Install Tainacan core into test env
+        run: |
+          WP_CORE_DIR="${TMPDIR:-/tmp}/wordpress"
+          mkdir -p "${WP_CORE_DIR}/wp-content/plugins"
+          git clone --depth 1 --branch master https://github.com/tainacan/tainacan.git "${WP_CORE_DIR}/wp-content/plugins/tainacan"
+
+      - name: Run PHPUnit
+        run: vendor/bin/phpunit --testsuite unit
+
+  compat:
+    name: PHP Compatibility (8.1+)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          tools: composer:v2
+          coverage: none
+
+      - name: Install dev dependencies
+        run: composer install --no-progress --prefer-dist
+
+      - name: PHP compatibility check
+        run: vendor/bin/phpcs --standard=PHPCompatibilityWP --runtime-set testVersion 8.1- --extensions=php --ignore=vendor,node_modules,tests,assets/js/vendor .

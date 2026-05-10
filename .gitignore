@@ -1,0 +1,15 @@
+/vendor/
+/node_modules/
+.phpunit.result.cache
+.phpcs.cache
+phpcs-report.txt
+phpunit-report.xml
+/build/
+/dist/
+*.log
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+tests/bootstrap-config.php
+tests/wordpress-test/
