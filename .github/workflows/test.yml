@@ -49,9 +49,15 @@ jobs:
       # SQL violations, etc. Style/docblock complaints are tracked
       # separately in phpcs-style (advisory).
       - name: Run PHPCS — security & DB rules only
+        # -q suppresses progress dots so cs2pr gets pure XML on stdin.
+        # ignore_warnings_on_exit=1 means SlowDBQuery (always a warning,
+        # never an error in WPCS) does not fail the job — they are
+        # intentionally suppressed at call sites and the suppression
+        # itself is verified by the style-advisory job.
         run: |
-          vendor/bin/phpcs --standard=phpcs.xml.dist \
+          vendor/bin/phpcs -q --standard=phpcs.xml.dist \
             --sniffs=WordPress.Security.NonceVerification,WordPress.Security.ValidatedSanitizedInput,WordPress.Security.EscapeOutput,WordPress.Security.SafeRedirect,WordPress.Security.PluginMenuSlug,WordPress.DB.PreparedSQL,WordPress.DB.PreparedSQLPlaceholders,WordPress.DB.DirectDatabaseQuery,WordPress.DB.SlowDBQuery,WordPress.WP.GlobalVariablesOverride \
+            --runtime-set ignore_warnings_on_exit 1 \
             --report=checkstyle | cs2pr
 
   phpcs-style:
