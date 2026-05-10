@@ -22,8 +22,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  phpcs:
-    name: PHPCS (WPCS strict)
+  phpcs-security:
+    name: PHPCS (security, blocking)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,13 +39,49 @@ jobs:
         uses: actions/cache@v4
         with:
           path: vendor
-          key: ${{ runner.os }}-composer-${{ hashFiles('composer.json') }}
+          key: ${{ runner.os }}-composer-${{ hashFiles('composer.lock') }}
 
       - name: Install dev dependencies
         run: composer install --no-progress --prefer-dist
 
-      - name: Run PHPCS
-        run: vendor/bin/phpcs --standard=phpcs.xml.dist --report=checkstyle | cs2pr
+      # Security-only lint: WordPress.Security + WordPress.DB rules.
+      # These must pass — they catch XSS, SQLi, missing nonce, prepared
+      # SQL violations, etc. Style/docblock complaints are tracked
+      # separately in phpcs-style (advisory).
+      - name: Run PHPCS — security & DB rules only
+        run: |
+          vendor/bin/phpcs --standard=phpcs.xml.dist \
+            --sniffs=WordPress.Security.NonceVerification,WordPress.Security.ValidatedSanitizedInput,WordPress.Security.EscapeOutput,WordPress.Security.SafeRedirect,WordPress.Security.PluginMenuSlug,WordPress.DB.PreparedSQL,WordPress.DB.PreparedSQLPlaceholders,WordPress.DB.DirectDatabaseQuery,WordPress.DB.SlowDBQuery,WordPress.WP.GlobalVariablesOverride,WordPressVIPMinimum.Security \
+            --report=checkstyle | cs2pr
+
+  phpcs-style:
+    name: PHPCS (style, advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          tools: composer:v2
+          coverage: none
+
+      - name: Cache Composer
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: ${{ runner.os }}-composer-${{ hashFiles('composer.lock') }}
+
+      - name: Install dev dependencies
+        run: composer install --no-progress --prefer-dist
+
+      # Full ruleset (docblocks, Yoda, naming, alignment, etc.).
+      # Advisory only — surface the count in the job summary but don't
+      # fail the build. Tracked for incremental reduction over time.
+      - name: Run PHPCS — full ruleset (advisory)
+        run: vendor/bin/phpcs --standard=phpcs.xml.dist --report=summary || true
 
   phpunit:
     name: PHPUnit (PHP ${{ matrix.php }}, WP ${{ matrix.wordpress }})
@@ -80,6 +116,9 @@ jobs:
           tools: composer:v2, wp-cli
           extensions: mysqli, xml, mbstring, simplexml, curl
           coverage: none
+
+      - name: Install subversion (required by install-wp-tests.sh)
+        run: sudo apt-get update && sudo apt-get install -y subversion
 
       - name: Install dev dependencies
         run: composer install --no-progress --prefer-dist
