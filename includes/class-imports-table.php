@@ -93,13 +93,14 @@ class Imports_Table {
 	 */
 	public function list_recent( int $limit = 20 ): array {
 		global $wpdb;
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned imports table; admin list view; limit via %d placeholder.
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned imports table; admin list view; $this->table from $wpdb->prefix; limit via %d placeholder.
 		$rows = $wpdb->get_results(
 			$wpdb->prepare(
 				"SELECT * FROM {$this->table} ORDER BY created_at DESC LIMIT %d",
 				$limit
 			)
 		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		return is_array( $rows ) ? $rows : array();
 	}
 

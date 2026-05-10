@@ -430,11 +430,12 @@ class Plugin extends \Tainacan\Pages {
 
 	public function ajax_start_import() {
 		$this->authorize_ajax();
-		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Raw JSON string is fed directly into json_decode() + is_array() check below; treating as a string before decode is the canonical handling.
+		// phpcs:disable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Raw JSON string is fed directly into json_decode() + is_array() check below; treating as a string before decode is the canonical handling.
 		$mapping_raw = isset( $_POST['metadata_mapping'] )
 			? wp_unslash( $_POST['metadata_mapping'] )
 			: '';
-		$mapping     = '' !== $mapping_raw ? json_decode( $mapping_raw, true ) : array();
+		// phpcs:enable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+		$mapping = '' !== $mapping_raw ? json_decode( $mapping_raw, true ) : array();
 		if ( ! is_array( $mapping ) ) {
 			$mapping = array();
 		}
@@ -523,8 +524,9 @@ class Plugin extends \Tainacan\Pages {
 		if ( ! $collection_id ) {
 			wp_send_json_error( array( 'message' => __( 'Collection ID required.', 'tainacan-oai-pmh' ) ) );
 		}
-		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Raw JSON string is fed directly into json_decode() + is_array() check below; treating as a string before decode is the canonical handling.
-		$source_raw    = isset( $_POST['source_fields'] ) ? wp_unslash( $_POST['source_fields'] ) : '';
+		// phpcs:disable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Raw JSON string is fed directly into json_decode() + is_array() check below; sanitize_*() would mangle JSON entities.
+		$source_raw = isset( $_POST['source_fields'] ) ? wp_unslash( $_POST['source_fields'] ) : '';
+		// phpcs:enable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
 		$source_fields = '' !== $source_raw ? json_decode( $source_raw, true ) : array();
 		if ( ! is_array( $source_fields ) ) {
 			$source_fields = array();
@@ -563,9 +565,10 @@ class Plugin extends \Tainacan\Pages {
 	public function ajax_save_harvest_source() {
 		$this->authorize_ajax();
 		$id = absint( $_POST['id'] ?? 0 );
-		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Raw JSON string is fed directly into json_decode() + is_array() check below; treating as a string before decode is the canonical handling.
+		// phpcs:disable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Raw JSON string is fed directly into json_decode() + is_array() check below; sanitize_*() would mangle JSON entities.
 		$mapping_raw = isset( $_POST['metadata_mapping'] ) ? wp_unslash( $_POST['metadata_mapping'] ) : '';
-		$mapping     = '' !== $mapping_raw ? json_decode( $mapping_raw, true ) : array();
+		// phpcs:enable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+		$mapping = '' !== $mapping_raw ? json_decode( $mapping_raw, true ) : array();
 		if ( ! is_array( $mapping ) ) {
 			$mapping = array();
 		}

@@ -1,13 +1,20 @@
 <?php
 /**
- * phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound
+ * Tabbed admin page shell — picks the right tab-*.php partial to include.
+ *
+ * Variable names are intentionally prefixed `oai_*` to avoid the WPCS
+ * NonPrefixedVariableFound + GlobalVariablesOverride sniffs, which flag
+ * generic identifiers like $tab / $tabs that collide with core globals.
+ *
+ * @package Tainacan_OAI_PMH
  */
+
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-$tab  = $data['tab'] ?? 'dashboard';
-$tabs = array(
+$oai_current_tab = $data['tab'] ?? 'dashboard';
+$oai_tabs        = array(
 	'dashboard'  => array(
 		'icon'  => 'dashicons-dashboard',
 		'label' => __( 'Dashboard', 'tainacan-oai-pmh' ),
@@ -44,22 +51,22 @@ $tabs = array(
 			<?php esc_html_e( 'Share your collections and import from external repositories.', 'tainacan-oai-pmh' ); ?>
 		</p>
 	</div>
-	
+
 	<!-- Tab Navigation -->
 	<nav class="tainacan-oai-tabs">
-		<?php foreach ( $tabs as $slug => $t ) : ?>
-			<a href="<?php echo esc_url( admin_url( "admin.php?page=tainacan_oai_pmh&tab=$slug" ) ); ?>" 
-				class="tainacan-oai-tab <?php echo $tab === $slug ? 'active' : ''; ?>">
-				<span class="dashicons <?php echo esc_attr( $t['icon'] ); ?>"></span>
-				<span><?php echo esc_html( $t['label'] ); ?></span>
+		<?php foreach ( $oai_tabs as $oai_slug => $oai_tab_def ) : ?>
+			<a href="<?php echo esc_url( admin_url( "admin.php?page=tainacan_oai_pmh&tab=$oai_slug" ) ); ?>"
+				class="tainacan-oai-tab <?php echo $oai_current_tab === $oai_slug ? 'active' : ''; ?>">
+				<span class="dashicons <?php echo esc_attr( $oai_tab_def['icon'] ); ?>"></span>
+				<span><?php echo esc_html( $oai_tab_def['label'] ); ?></span>
 			</a>
 		<?php endforeach; ?>
 	</nav>
-	
+
 	<!-- Content -->
 	<div class="tainacan-oai-content">
 		<?php
-		switch ( $tab ) {
+		switch ( $oai_current_tab ) {
 			case 'importer':
 				include __DIR__ . '/tab-importer.php';
 				break;

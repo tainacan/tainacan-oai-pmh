@@ -50,33 +50,33 @@ $schedule_labels = array(
 				</td></tr>
 				<?php
 			else :
-				foreach ( $sources as $s ) :
-					$col         = new \Tainacan\Entities\Collection( (int) $s->collection_id );
+				foreach ( $sources as $src ) :
+					$col         = new \Tainacan\Entities\Collection( (int) $src->collection_id );
 					$col_name    = $col->get_id() ? $col->get_name() : '—';
-					$sched_label = $schedule_labels[ $s->schedule ] ?? $s->schedule;
-					if ( ! $s->is_active ) {
+					$sched_label = $schedule_labels[ $src->schedule ] ?? $src->schedule;
+					if ( ! $src->is_active ) {
 						$sched_label .= ' (' . esc_html__( 'inactive', 'tainacan-oai-pmh' ) . ')';
 					}
 
-					$last_run = $s->last_run_at
-					? date_i18n( get_option( 'date_format' ) . ' H:i', strtotime( $s->last_run_at . ' UTC' ) )
+					$last_run = $src->last_run_at
+					? date_i18n( get_option( 'date_format' ) . ' H:i', strtotime( $src->last_run_at . ' UTC' ) )
 					: '—';
-					$next_run = ! empty( $s->next_run_ts )
-					? date_i18n( get_option( 'date_format' ) . ' H:i', $s->next_run_ts )
+					$next_run = ! empty( $src->next_run_ts )
+					? date_i18n( get_option( 'date_format' ) . ' H:i', $src->next_run_ts )
 					: '—';
 					?>
-				<tr data-source-id="<?php echo esc_attr( $s->id ); ?>" class="oai-source-row oai-source-<?php echo esc_attr( $s->last_run_status ); ?>">
-					<td><strong><?php echo esc_html( $s->label ); ?></strong></td>
-					<td><small><?php echo esc_html( wp_parse_url( $s->source_url, PHP_URL_HOST ) ); ?></small></td>
+				<tr data-source-id="<?php echo esc_attr( $src->id ); ?>" class="oai-source-row oai-source-<?php echo esc_attr( $src->last_run_status ); ?>">
+					<td><strong><?php echo esc_html( $src->label ); ?></strong></td>
+					<td><small><?php echo esc_html( wp_parse_url( $src->source_url, PHP_URL_HOST ) ); ?></small></td>
 					<td><?php echo esc_html( $col_name ); ?></td>
 					<td><?php echo esc_html( $sched_label ); ?></td>
 					<td>
 						<?php echo esc_html( $last_run ); ?>
-						<?php if ( $s->last_run_status === 'error' ) : ?>
+						<?php if ( $src->last_run_status === 'error' ) : ?>
 							<br><span class="oai-badge oai-badge-error"><?php esc_html_e( 'error', 'tainacan-oai-pmh' ); ?></span>
-						<?php elseif ( $s->last_run_status === 'success' ) : ?>
+						<?php elseif ( $src->last_run_status === 'success' ) : ?>
 							<br><span class="oai-badge oai-badge-completed"><?php esc_html_e( 'ok', 'tainacan-oai-pmh' ); ?></span>
-						<?php elseif ( $s->last_run_status === 'running' ) : ?>
+						<?php elseif ( $src->last_run_status === 'running' ) : ?>
 							<br><span class="oai-badge oai-badge-processing"><?php esc_html_e( 'running', 'tainacan-oai-pmh' ); ?></span>
 						<?php endif; ?>
 					</td>
@@ -89,18 +89,18 @@ $schedule_labels = array(
 							echo esc_html(
 								sprintf(
 									$oai_counter_format,
-									(int) $s->items_created,
-									(int) $s->items_updated,
-									(int) $s->items_deleted
+									(int) $src->items_created,
+									(int) $src->items_updated,
+									(int) $src->items_deleted
 								)
 							);
 							?>
-											<?php if ( (int) $s->items_failed > 0 ) : ?>
+											<?php if ( (int) $src->items_failed > 0 ) : ?>
 								<br><span style="color:#d63638;">
 												<?php
 												/* translators: %d: number of failed items */
 												$oai_failed_format = __( '%d failed', 'tainacan-oai-pmh' );
-												echo esc_html( sprintf( $oai_failed_format, (int) $s->items_failed ) );
+												echo esc_html( sprintf( $oai_failed_format, (int) $src->items_failed ) );
 												?>
 								</span>
 							<?php endif; ?>
@@ -111,7 +111,7 @@ $schedule_labels = array(
 							<span class="dashicons dashicons-controls-play"></span>
 						</button>
 						<button type="button" class="button button-small btn-toggle-harvest" title="<?php esc_attr_e( 'Pause/Resume', 'tainacan-oai-pmh' ); ?>">
-							<span class="dashicons dashicons-<?php echo $s->is_active ? 'controls-pause' : 'controls-play'; ?>"></span>
+							<span class="dashicons dashicons-<?php echo $src->is_active ? 'controls-pause' : 'controls-play'; ?>"></span>
 						</button>
 						<button type="button" class="button button-small btn-edit-harvest" title="<?php esc_attr_e( 'Edit', 'tainacan-oai-pmh' ); ?>">
 							<span class="dashicons dashicons-edit"></span>
@@ -122,23 +122,23 @@ $schedule_labels = array(
 					</td>
 				</tr>
 									<?php
-									if ( ! empty( $s->error_log ) ) :
-										$log_lines = array_slice( array_filter( explode( "\n", $s->error_log ) ), -50 );
+									if ( ! empty( $src->error_log ) ) :
+										$log_lines = array_slice( array_filter( explode( "\n", $src->error_log ) ), -50 );
 										?>
-				<tr class="oai-log-row oai-harvest-log-row" id="harvest-log-<?php echo esc_attr( $s->id ); ?>" style="display:none;">
+				<tr class="oai-log-row oai-harvest-log-row" id="harvest-log-<?php echo esc_attr( $src->id ); ?>" style="display:none;">
 					<td colspan="8">
 						<div class="oai-log-toolbar">
 							<strong><?php esc_html_e( 'Activity log (last 50 entries):', 'tainacan-oai-pmh' ); ?></strong>
 							<span class="oai-log-actions">
-								<button type="button" class="button button-small oai-load-full-harvest-log" data-source-id="<?php echo esc_attr( $s->id ); ?>">
+								<button type="button" class="button button-small oai-load-full-harvest-log" data-source-id="<?php echo esc_attr( $src->id ); ?>">
 										<?php esc_html_e( 'Show full log', 'tainacan-oai-pmh' ); ?>
 								</button>
-								<button type="button" class="button button-small button-link-delete oai-clear-harvest-log" data-source-id="<?php echo esc_attr( $s->id ); ?>">
+								<button type="button" class="button button-small button-link-delete oai-clear-harvest-log" data-source-id="<?php echo esc_attr( $src->id ); ?>">
 										<?php esc_html_e( 'Clear log', 'tainacan-oai-pmh' ); ?>
 								</button>
 							</span>
 						</div>
-						<div class="oai-log-pane" id="harvest-log-pane-<?php echo esc_attr( $s->id ); ?>">
+						<div class="oai-log-pane" id="harvest-log-pane-<?php echo esc_attr( $src->id ); ?>">
 										<?php
 										foreach ( $log_lines as $line ) :
 											$cls = 'oai-log-info';

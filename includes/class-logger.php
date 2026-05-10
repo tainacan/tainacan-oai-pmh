@@ -255,13 +255,15 @@ class Logger {
 
 	public function get_harvesters( $limit = 50 ) {
 		global $wpdb;
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned harvesters table; admin list view; limit via %d placeholder.
-		return $wpdb->get_results(
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned harvesters table; admin list view; $this->harvesters_table from $wpdb->prefix; limit via %d placeholder.
+		$rows = $wpdb->get_results(
 			$wpdb->prepare(
 				"SELECT * FROM {$this->harvesters_table} ORDER BY last_seen DESC LIMIT %d",
 				$limit
 			)
 		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return $rows;
 	}
 
 	public function get_harvester_stats() {
