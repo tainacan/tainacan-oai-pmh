@@ -6,19 +6,17 @@
  *   - Imports_Table   ($wpdb wrapper for the plugin's own imports table)
  *   - Item_Resolver   ($wpdb wrapper for postmeta dedup queries)
  *
- * After this decomposition, the file no longer carries a file-level
- * phpcs:disable: every $wpdb call has migrated into the helper class
- * that owns it, with line-level justifications there. Internal proxy
- * methods (request/parse_xml/append_log/...) preserve the call sites
- * inside this class so the bitstream-fetch code keeps reading naturally
- * without needing direct knowledge of the helpers.
+ * After Phases 2 + 2.5 this file carries zero phpcs:disable directives
+ * (file-level OR line-level). Every $wpdb call migrated into the helper
+ * class that owns it with specific justifications there. set_time_limit()
+ * — the last Squiz.PHP.DiscouragedFunctions site — was removed once the
+ * resilience properties of the harvest loop were verified: every record
+ * commits individually, the watermark advances only on success, and the
+ * dedup query short-circuits already-imported records on a redo.
  *
- * Remaining file-level concerns documented inline:
- *  - set_time_limit() in harvest_loop() carries a single line-level
- *    Squiz.PHP.DiscouragedFunctions suppression with a strong reason
- *    (cron-driven multi-page sync; bg-process migration is Phase 2.5).
- *  - process_batch() no longer calls set_time_limit() — batches of 10
- *    fit in the default PHP execution window.
+ * Internal proxy methods (request/parse_xml/append_log/...) preserve the
+ * call sites inside this class so the bitstream-fetch code keeps reading
+ * naturally without needing direct knowledge of the helpers.
  *
  * @package Tainacan_OAI_PMH
  * @see https://www.openarchives.org/OAI/openarchivesprotocol.html
@@ -678,19 +676,27 @@ class Importer {
 	 * }
 	 */
 	public function harvest_loop( array $config ): array {
-		// Scheduled cron-driven multi-page sync. Unlike process_batch (which
-		// returns after 10 records so the browser poller can pace the work),
-		// harvest_loop walks the entire resumption-token chain in a single
-		// pass — there's no DB-persisted state to resume from. It legitimately
-		// needs an unbounded time window; the @-silenced set_time_limit is
-		// the only Squiz.PHP.DiscouragedFunctions site left in this class.
-		// Migrating this loop into \Tainacan\Background_Process eliminates
-		// this suppression (tracked as Phase 2.5).
-		if ( function_exists( 'set_time_limit' ) ) {
-			// phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged,WordPress.PHP.NoSilencedErrors.Discouraged -- See block comment above; set_time_limit may be disabled (open_basedir / safe_mode) and we don't want a fatal there.
-			@set_time_limit( 0 );
-		}
+		// Scheduled cron-driven multi-page sync. Two resilience properties make
+		// PHP-level time limits a non-issue, which is why set_time_limit() was
+		// removed in Phase 2.5:
+		//
+		// 1. Within-run: each record is committed individually (create_item /
+		//    update_item_from_oai persist before returning), and the dedup tag
+		//    (_tainacan_oai_source_id) is written immediately after. A timeout
+		//    mid-stream loses only the *unprocessed* tail of the current page;
+		//    everything created so far stays.
+		// 2. Across-run: Harvester::run() persists last_datestamp to the
+		//    sources row AFTER harvest_loop() returns successfully. If we time
+		//    out, that write doesn't happen, so the next cron run replays the
+		//    same `from=` window — and the dedup check (find_by_oai_identifier)
+		//    short-circuits every already-created record as 'skipped'. No data
+		//    loss; at worst, wasted work on the redo.
+		//
+		// For installs with aggressive max_execution_time settings, raising
+		// it at php.ini / PHP-FPM level (or via .htaccess) is the right place,
+		// not inside plugin code.
 		ignore_user_abort( true );
+		wp_raise_memory_limit( 'admin' );
 
 		$stats = array(
 			'created'        => 0,
