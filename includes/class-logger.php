@@ -1,15 +1,17 @@
 <?php
 /**
- * Plugin Check / phpcs suppressions: this class operates on the plugin's
- * custom logs/harvesters tables and accumulates rows from public OAI endpoints.
+ * Request/response logger for the OAI-PMH endpoint.
  *
- * phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery
- * phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching
- * phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
- * phpcs:disable WordPress.DB.PreparedSQL.NotPrepared
- * phpcs:disable WordPress.Security.NonceVerification.Recommended
- * phpcs:disable PluginCheck.Security.DirectDB.UnescapedDBParameter
+ * Persists log entries to a plugin-owned table (`tainacan_oai_logs`) and
+ * tracks unique IP harvesters in a second table (`tainacan_oai_harvesters`).
+ * \$_SERVER reads are read-only (not state-mutating), so the WP Security
+ * nonce sniff is suppressed line-by-line with that justification rather
+ * than via a file-level disable. Each direct \$wpdb call carries its own
+ * specific suppression comment.
+ *
+ * @package Tainacan_OAI_PMH
  */
+
 namespace Tainacan_OAI_PMH;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -34,6 +36,12 @@ class Logger {
 
 		global $wpdb;
 
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Server-var read-only access; no state mutation triggered by this read.
+		$ua = isset( $_SERVER['HTTP_USER_AGENT'] )
+			? substr( sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) ), 0, 500 )
+			: '';
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned logs table; $wpdb->insert() escapes values; caching would mask the write.
 		$wpdb->insert(
 			$this->table,
 			array(
@@ -41,13 +49,14 @@ class Logger {
 				'message'       => $message,
 				'context'       => maybe_serialize( $context ),
 				'ip_address'    => $this->get_client_ip(),
-				'user_agent'    => isset( $_SERVER['HTTP_USER_AGENT'] ) ? substr( sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) ), 0, 500 ) : '',
+				'user_agent'    => $ua,
 				'verb'          => $context['verb'] ?? null,
 				'response_time' => $context['response_time'] ?? null,
 				'created_at'    => gmdate( 'Y-m-d H:i:s' ),
 			)
 		);
 
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Server-var read-only access; no state mutation triggered by this read.
 		if ( ! empty( $_SERVER['REMOTE_ADDR'] ) ) {
 			$this->track_harvester();
 		}
@@ -57,18 +66,24 @@ class Logger {
 		global $wpdb;
 
 		$ip = $this->get_client_ip();
-		$ua = isset( $_SERVER['HTTP_USER_AGENT'] ) ? substr( sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) ), 0, 500 ) : '';
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Server-var read-only access; no state mutation triggered by this read.
+		$ua = isset( $_SERVER['HTTP_USER_AGENT'] )
+			? substr( sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) ), 0, 500 )
+			: '';
 
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned harvesters table; $this->harvesters_table from $wpdb->prefix; IP via %s placeholder.
 		$exists = $wpdb->get_row(
 			$wpdb->prepare(
 				"SELECT * FROM {$this->harvesters_table} WHERE ip_address = %s",
 				$ip
 			)
 		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 
 		$now_utc = gmdate( 'Y-m-d H:i:s' );
 
 		if ( $exists ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned harvesters table; $wpdb->update() escapes values; would mask write if cached.
 			$wpdb->update(
 				$this->harvesters_table,
 				array(
@@ -79,7 +94,7 @@ class Logger {
 				array( 'ip_address' => $ip )
 			);
 		} else {
-			// hostname is resolved later by the daily cron — never block the request path
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned harvesters table; first-seen insert; $wpdb->insert() escapes values.
 			$wpdb->insert(
 				$this->harvesters_table,
 				array(
@@ -101,20 +116,25 @@ class Logger {
 	 */
 	public function resolve_pending_hostnames( int $limit = 100 ): int {
 		global $wpdb;
-		$rows     = $wpdb->get_results(
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned harvesters table; cron-time read; $this->harvesters_table from $wpdb->prefix; limit via %d placeholder.
+		$rows = $wpdb->get_results(
 			$wpdb->prepare(
 				"SELECT ip_address FROM {$this->harvesters_table} WHERE hostname IS NULL LIMIT %d",
 				$limit
 			)
 		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+
 		$resolved = 0;
 		foreach ( $rows as $row ) {
+			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- gethostbyaddr() emits a PHP warning on unresolvable hosts; we treat that path as "no PTR record" and continue, so silencing is intentional.
 			$hostname = @gethostbyaddr( $row->ip_address );
 			if ( $hostname && $hostname !== $row->ip_address ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned harvesters table; $wpdb->update() escapes values.
 				$wpdb->update( $this->harvesters_table, array( 'hostname' => $hostname ), array( 'ip_address' => $row->ip_address ) );
 				++$resolved;
 			} else {
-				// Mark as unresolvable so we don't keep retrying
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned harvesters table; marks row as unresolvable to break the retry loop.
 				$wpdb->update( $this->harvesters_table, array( 'hostname' => '' ), array( 'ip_address' => $row->ip_address ) );
 			}
 		}
@@ -122,7 +142,7 @@ class Logger {
 	}
 
 	private function get_client_ip(): string {
-		// REMOTE_ADDR is the only trustworthy source (forwarded headers are spoofable)
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Server-var read-only; logger reads REMOTE_ADDR before any state mutation. No nonce semantically applicable here.
 		if ( ! empty( $_SERVER['REMOTE_ADDR'] ) ) {
 			$ip = sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) );
 			if ( filter_var( $ip, FILTER_VALIDATE_IP ) ) {
@@ -131,7 +151,9 @@ class Logger {
 		}
 		if ( Settings::get( 'trust_proxy_headers', false ) ) {
 			foreach ( array( 'HTTP_X_FORWARDED_FOR', 'HTTP_CLIENT_IP' ) as $h ) {
+				// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Server-var read-only; same justification as above.
 				if ( ! empty( $_SERVER[ $h ] ) ) {
+					// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Server-var read-only; same justification as above.
 					$forwarded = explode( ',', sanitize_text_field( wp_unslash( $_SERVER[ $h ] ) ) )[0];
 					$ip        = trim( $forwarded );
 					if ( filter_var( $ip, FILTER_VALIDATE_IP ) ) {
@@ -173,7 +195,7 @@ class Logger {
 		$sql = "SELECT * FROM {$this->table} WHERE " . implode( ' AND ', $where ) .
 				' ORDER BY created_at DESC LIMIT %d OFFSET %d';
 
-        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- $sql is built from %s/%d placeholders + the trusted table name; values pass through prepare().
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned logs table; $sql built from %s/%d placeholders + trusted $this->table; values via prepare().
 		return $wpdb->get_results( $wpdb->prepare( $sql, $params ) );
 	}
 
@@ -182,6 +204,7 @@ class Logger {
 
 		$since = gmdate( 'Y-m-d H:i:s', strtotime( "-$period" ) );
 
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned logs table; aggregate COUNT/AVG queries; $this->table from $wpdb->prefix; values via %s placeholder.
 		return array(
 			'total_requests'    => (int) $wpdb->get_var(
 				$wpdb->prepare(
@@ -206,6 +229,7 @@ class Logger {
 			),
 			'error_rate'        => 0,
 		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 	}
 
 	public function get_daily_stats( $days = 14 ) {
@@ -213,22 +237,25 @@ class Logger {
 
 		$since = gmdate( 'Y-m-d', strtotime( "-$days days" ) );
 
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned logs table; daily aggregate GROUP BY; $this->table from $wpdb->prefix; date via %s placeholder.
 		return $wpdb->get_results(
 			$wpdb->prepare(
-				"SELECT DATE(created_at) as date, 
+				"SELECT DATE(created_at) as date,
                     COUNT(*) as total,
                     SUM(CASE WHEN level = 'error' THEN 1 ELSE 0 END) as errors
-             FROM {$this->table} 
-             WHERE DATE(created_at) >= %s 
-             GROUP BY DATE(created_at) 
+             FROM {$this->table}
+             WHERE DATE(created_at) >= %s
+             GROUP BY DATE(created_at)
              ORDER BY date ASC",
 				$since
 			)
 		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 	}
 
 	public function get_harvesters( $limit = 50 ) {
 		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned harvesters table; admin list view; limit via %d placeholder.
 		return $wpdb->get_results(
 			$wpdb->prepare(
 				"SELECT * FROM {$this->harvesters_table} ORDER BY last_seen DESC LIMIT %d",
@@ -240,6 +267,7 @@ class Logger {
 	public function get_harvester_stats() {
 		global $wpdb;
 
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned harvesters table; aggregate stats; $this->harvesters_table from $wpdb->prefix; no user input.
 		return array(
 			'total'          => (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$this->harvesters_table}" ),
 			'active'         => (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$this->harvesters_table} WHERE status = 'active'" ),
@@ -251,11 +279,13 @@ class Logger {
 			),
 			'total_requests' => (int) $wpdb->get_var( "SELECT SUM(total_requests) FROM {$this->harvesters_table}" ),
 		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 	}
 
 	public function cleanup( $days = 30 ) {
 		global $wpdb;
 		$date = gmdate( 'Y-m-d H:i:s', strtotime( "-$days days" ) );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned logs table; cron cleanup; $this->table from $wpdb->prefix; date via %s placeholder.
 		return $wpdb->query( $wpdb->prepare( "DELETE FROM {$this->table} WHERE created_at < %s", $date ) );
 	}
 
