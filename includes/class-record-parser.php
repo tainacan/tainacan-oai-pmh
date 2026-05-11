@@ -126,23 +126,28 @@ class Record_Parser {
 	public function parse_xoai_metadata( \SimpleXMLElement $metadata ): array {
 		$bag = array();
 
-		// SimpleXML's ->children( $ns ) behavior varies depending on where the
-		// xmlns:doc declaration sits in the document tree (on the OAI wrapper
-		// vs. on <doc:metadata> itself). xpath() with an explicit namespace
-		// binding is unambiguous. We try both common shapes: a single
-		// <doc:metadata> wrapper, or a top-level set of <doc:element> nodes.
-		$metadata->registerXPathNamespace( 'xoai', self::XOAI_NS );
-		$roots = $metadata->xpath( 'xoai:metadata/xoai:element' );
-		if ( empty( $roots ) ) {
-			$roots = $metadata->xpath( 'xoai:element' );
-		}
-		if ( ! is_array( $roots ) ) {
-			return $bag;
+		// SimpleXML's namespace-aware iteration is fiddly when the xmlns:doc
+		// declaration sits on the <doc:metadata> element itself rather than
+		// on an ancestor. The robust approach: walk every descendant once
+		// while parser-name-checking each element. The walker treats
+		// <doc:metadata> as a transparent wrapper and starts building the
+		// dotted path at the first <doc:element>.
+		foreach ( $metadata->children( self::XOAI_NS ) as $child ) {
+			$this->walk_xoai_element( $child, '', $bag, self::XOAI_NS );
 		}
 
-		foreach ( $roots as $root ) {
-			$this->walk_xoai_element( $root, '', $bag, self::XOAI_NS );
+		// Fallback: when the xmlns:doc declaration is on <doc:metadata>
+		// itself, the children() call above may return nothing because the
+		// namespace isn't active for the parent's iterator context. Walk all
+		// untyped children and match by their getName() == 'metadata'.
+		if ( empty( $bag ) ) {
+			foreach ( $metadata->children() as $child ) {
+				if ( 'metadata' === $child->getName() ) {
+					$this->walk_xoai_element( $child, '', $bag, self::XOAI_NS );
+				}
+			}
 		}
+
 		return $bag;
 	}
 
