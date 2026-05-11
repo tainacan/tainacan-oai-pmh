@@ -94,8 +94,8 @@ class Importer {
 		return $this->parser->parse_record( $record, $prefix );
 	}
 
-	private function lookup_metadata_value( array $bag, array $keys ): ?string {
-		return $this->parser->lookup_metadata_value( $bag, $keys );
+	private function lookup_metadata_value( array $bag, array $keys, bool $first_only = false ): ?string {
+		return $this->parser->lookup_metadata_value( $bag, $keys, $first_only );
 	}
 
 	private function find_item_by_oai_identifier( string $oai_identifier, ?int $collection_id = null ): ?int {
@@ -860,17 +860,20 @@ class Importer {
 			return new \WP_Error( 'not_found', 'Item not found.' );
 		}
 
-		$title = $parsed['metadata']['title'] ?? $parsed['identifier'];
-		if ( is_array( $title ) ) {
-			$title = $title[0] ?? '';
-		}
+		// Use the same lookup as create_item() so we cover oai_dc, qdc and xoai
+		// key conventions uniformly. first_only=true on the title to avoid the
+		// "Foo Foo Alt" duplication when the upstream emits two <dc:title>s.
+		$title = $this->lookup_metadata_value( $parsed['metadata'], array( 'title', 'dc.title' ), true );
 		if ( ! is_string( $title ) || $title === '' ) {
 			$title = $parsed['identifier'] ?: $post->post_title;
 		}
 
-		$desc = $parsed['metadata']['description'] ?? '';
-		if ( is_array( $desc ) ) {
-			$desc = implode( "\n\n", array_filter( $desc ) );
+		$desc = $this->lookup_metadata_value(
+			$parsed['metadata'],
+			array( 'description', 'dc.description.abstract', 'abstract', 'dc.description' )
+		);
+		if ( $desc === null ) {
+			$desc = '';
 		}
 
 		wp_update_post(
@@ -933,7 +936,12 @@ class Importer {
 		// oai_dc → title, description
 		// qdc    → title, abstract / description
 		// xoai   → dc.title, dc.description.abstract / dc.description
-		$title = $this->lookup_metadata_value( $record['metadata'], array( 'title', 'dc.title' ) );
+		// Title is singular by nature — pass first_only=true so a record with
+		// multiple <dc:title> values (variant spelling, translation, etc.)
+		// doesn't end up with "Foo\n\nBar" propagating into post slug + Tainacan
+		// UI. Description stays joined: multi-value abstracts/descriptions are
+		// normal and the upstream usually emits them as related text segments.
+		$title = $this->lookup_metadata_value( $record['metadata'], array( 'title', 'dc.title' ), true );
 		if ( ! is_string( $title ) || $title === '' ) {
 			$title = $record['identifier'] ?: __( 'Untitled imported item', 'tainacan-oai-pmh' );
 		}

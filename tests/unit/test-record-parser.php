@@ -264,4 +264,46 @@ XML;
 		$bag = array( 'title' => 'Hello' );
 		$this->assertNull( $this->parser->lookup_metadata_value( $bag, array( 'description', 'abstract' ) ) );
 	}
+
+	public function test_lookup_metadata_value_first_only_returns_single_value(): void {
+		// Production case: upstream emits two <dc:title> with variant spellings.
+		// Without first_only the lookup joins them with "\n\n" and the join leaks
+		// into post_title + slug ("Foo Foo Alt"). first_only=true must return
+		// just the first non-empty entry.
+		$bag = array( 'title' => array( 'Pequena Ilustração', 'Pequena Illustração' ) );
+
+		$this->assertSame(
+			'Pequena Ilustração',
+			$this->parser->lookup_metadata_value( $bag, array( 'title' ), true )
+		);
+	}
+
+	public function test_lookup_metadata_value_first_only_skips_empty_entries(): void {
+		// When the first array entry is empty, first_only should move on to the
+		// next non-empty one — not return the empty string nor the joined result.
+		$bag = array( 'title' => array( '', '   ', 'Real Title', 'Other' ) );
+
+		$this->assertSame(
+			'Real Title',
+			$this->parser->lookup_metadata_value( $bag, array( 'title' ), true )
+		);
+	}
+
+	public function test_lookup_metadata_value_first_only_returns_null_when_all_empty(): void {
+		// Defensive: every entry empty/whitespace → null, not the empty string.
+		$bag = array( 'title' => array( '', ' ', "\t\n" ) );
+
+		$this->assertNull(
+			$this->parser->lookup_metadata_value( $bag, array( 'title' ), true )
+		);
+	}
+
+	public function test_lookup_metadata_value_first_only_preserves_default_join_behavior_for_description(): void {
+		// Regression guard: switching the title call to first_only=true must not
+		// change behavior for description-style fields that still pass false.
+		$bag    = array( 'description' => array( 'first paragraph', 'second paragraph' ) );
+		$result = $this->parser->lookup_metadata_value( $bag, array( 'description' ), false );
+		$this->assertStringContainsString( 'first paragraph', $result );
+		$this->assertStringContainsString( 'second paragraph', $result );
+	}
 }

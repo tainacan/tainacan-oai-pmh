@@ -297,21 +297,45 @@ class Record_Parser {
 	 * Used by callers that need to read title/description across oai_dc/qdc/xoai
 	 * key conventions.
 	 *
-	 * @param array<string,string|array<int,string>> $bag  Parsed metadata.
-	 * @param array<int,string>                      $keys Candidate keys in priority order.
+	 * For multi-valued fields, the default behavior is to JOIN every non-empty
+	 * value with a paragraph break — appropriate for description/abstract where
+	 * the upstream may legitimately emit several text segments belonging together.
+	 *
+	 * Callers reading singular fields (title, identifier, …) should pass
+	 * `$first_only = true` to receive ONLY the first non-empty entry. Without
+	 * that flag a record like `<dc:title>Foo</dc:title><dc:title>Foo Alt</dc:title>`
+	 * lands as `"Foo\n\nFoo Alt"` which then propagates into the post slug and
+	 * Tainacan UI as `Foo Foo Alt` — exactly what bit production for
+	 * "Pequena Ilustração / Pequena Illustração" in May 2026.
+	 *
+	 * @param array<string,string|array<int,string>> $bag        Parsed metadata.
+	 * @param array<int,string>                      $keys       Candidate keys in priority order.
+	 * @param bool                                   $first_only When the matched value is an array, return only the first non-empty element instead of joining everything.
 	 * @return string|null
 	 */
-	public function lookup_metadata_value( array $bag, array $keys ): ?string {
+	public function lookup_metadata_value( array $bag, array $keys, bool $first_only = false ): ?string {
 		foreach ( $keys as $key ) {
 			if ( ! isset( $bag[ $key ] ) ) {
 				continue;
 			}
 			$value = $bag[ $key ];
 			if ( is_array( $value ) ) {
-				// Multi-valued fields (typical for description/abstract) are
-				// joined with a paragraph break so the caller gets the full
-				// concatenated text, not just the first segment.
-				$value = implode( "\n\n", array_filter( $value, static fn( $v ) => is_string( $v ) && '' !== $v ) );
+				if ( $first_only ) {
+					// Singular field semantics — take the first non-empty entry only.
+					foreach ( $value as $v ) {
+						if ( is_string( $v ) && '' !== trim( $v ) ) {
+							$value = $v;
+							break;
+						}
+					}
+					if ( is_array( $value ) ) {
+						$value = ''; // all entries were empty
+					}
+				} else {
+					// Multi-value semantics — join non-empty entries with a
+					// paragraph break (description/abstract pattern).
+					$value = implode( "\n\n", array_filter( $value, static fn( $v ) => is_string( $v ) && '' !== $v ) );
+				}
 			}
 			$value = is_string( $value ) ? trim( $value ) : '';
 			if ( '' !== $value ) {

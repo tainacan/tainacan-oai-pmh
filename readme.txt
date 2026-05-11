@@ -4,7 +4,7 @@ Tags: oai-pmh, tainacan, dspace, harvester, dublin-core
 Requires at least: 6.0
 Tested up to: 6.9
 Requires PHP: 8.1
-Stable tag: 0.6.4
+Stable tag: 0.6.5
 License: GPLv3 or later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -41,6 +41,50 @@ Yes. The bitstream pipeline is built around DSpace conventions and is the primar
 Yes for metadata. Bitstream download falls back gracefully when the upstream is not DSpace.
 
 == Changelog ==
+
+= 0.6.5 =
+
+Two small fixes and one new operational tool.
+
+Title de-duplication: when a record's `<dc:title>` (or equivalent xoai
+`dc.title`) emits multiple values for the same field — variant
+spelling, untranslated alt title, etc. — earlier versions joined them
+with a paragraph break and the join leaked into post_title plus the
+post slug. Production example: an item landing as
+"Pequena Ilustração Pequena Illustração" with slug
+"pequena-ilustracaopequena-ilustracao-2".
+
+Record_Parser::lookup_metadata_value() gains a `bool $first_only`
+parameter. When true, multi-valued matches return only the first
+non-empty entry; multi-value joining is retained as the default
+behavior for description/abstract where it's appropriate.
+Importer::create_item() and Importer::update_item_from_oai() now
+pass first_only=true for title lookups across all three metadata
+prefixes (oai_dc / qdc / xoai).
+
+Unit tests added covering: first_only single-value, first_only
+skipping empty entries, first_only returning null when every entry
+is empty, and a regression guard for the description join behavior.
+
+New WP-CLI subcommand:
+
+    wp tainacan-oai cleanup-legacy-thumbnails [--dry-run] [--repoint] [--force]
+
+Sweeps the database for attachments tagged
+`_oai_bitstream_bundle = THUMBNAIL` whose parent item ALSO has a
+separate ORIGINAL bundle attachment from this plugin. These are
+typically leftovers from pre-0.6.4 imports where the THUMBNAIL was
+attached as documento before 0.6.4 fixed the classification.
+
+Safe by default: items whose THUMBNAIL is currently set as Tainacan
+documento or WordPress featured image are skipped unless --repoint
+is provided. With --repoint, the documento/featured pointer is moved
+to the ORIGINAL attachment before the THUMBNAIL is removed, so the
+visual representation of the item is preserved.
+
+Default trash behavior (wp_trash_post) — admins can recover from the
+WP Media library. --force escalates to wp_delete_attachment(true) for
+permanent deletion.
 
 = 0.6.4 =
 
