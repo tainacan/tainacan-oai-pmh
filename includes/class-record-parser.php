@@ -148,21 +148,21 @@ class Record_Parser {
 		$tag  = $node->getName();
 		$name = isset( $node['name'] ) ? (string) $node['name'] : '';
 
-		if ( $tag === 'field' ) {
+		if ( 'field' === $tag ) {
 			// Only collect <field name="value"> — DSpace also emits authority/confidence
 			// fields we don't want to expose in the mapping table.
-			if ( $name !== 'value' ) {
+			if ( 'value' !== $name ) {
 				return;
 			}
 			$value = trim( (string) $node );
-			if ( $value === '' ) {
+			if ( '' === $value ) {
 				return;
 			}
 			// Strip the trailing language segment (last path component is the lang).
 			// Patterns: "dc.contributor.author.none" → "dc.contributor.author"
 			// "dc.title.pt_BR"             → "dc.title"
 			$key = preg_replace( '/\.(?:none|[a-z]{2,3}(?:[-_][A-Za-z]{2,4})?)$/', '', $path );
-			if ( $key === '' || $key === null ) {
+			if ( '' === $key || null === $key ) {
 				return;
 			}
 
@@ -177,8 +177,13 @@ class Record_Parser {
 			return;
 		}
 
-		if ( $tag === 'element' && $name !== '' ) {
-			$new_path = $path === '' ? $name : "$path.$name";
+		// 'element' is the standard xoai container; 'metadata' is the outer
+		// root wrapper used by DSpace (<doc:metadata>). Both need to descend
+		// into xoai-namespaced children.
+		$is_named_element = ( 'element' === $tag && '' !== $name );
+		$is_root_wrapper  = ( 'metadata' === $tag );
+		if ( $is_named_element || $is_root_wrapper ) {
+			$new_path = $is_root_wrapper ? $path : ( '' === $path ? $name : "$path.$name" );
 			foreach ( $node->children( $ns ) as $child ) {
 				$this->walk_xoai_element( $child, $new_path, $bag, $ns );
 			}
@@ -200,11 +205,21 @@ class Record_Parser {
 			OAI_Client::DC_NS,
 			'http://purl.org/dc/terms/',
 		);
-		foreach ( $metadata->children() as $wrapper ) {
-			foreach ( $namespaces as $ns ) {
-				$this->collect_elements_into( $bag, $wrapper->children( $ns ) );
+
+		// Walk every wrapper inside <metadata> regardless of its own namespace
+		// (oai_qdc:qualifieddc / qdc:qualifieddc / etc.). SimpleXML's ->children()
+		// without args returns only same-namespace children, which misses the
+		// usual qdc wrapper because <metadata> is in OAI_NS but the wrapper is
+		// in qdc. xpath('*') is namespace-agnostic and gets them all.
+		$wrappers = $metadata->xpath( '*' );
+		if ( is_array( $wrappers ) ) {
+			foreach ( $wrappers as $wrapper ) {
+				foreach ( $namespaces as $ns ) {
+					$this->collect_elements_into( $bag, $wrapper->children( $ns ) );
+				}
 			}
 		}
+		// Some servers don't nest the wrapper — try metadata's own children too.
 		foreach ( $namespaces as $ns ) {
 			$this->collect_elements_into( $bag, $metadata->children( $ns ) );
 		}
@@ -289,12 +304,16 @@ class Record_Parser {
 			if ( ! isset( $bag[ $key ] ) ) {
 				continue;
 			}
-			$v = $bag[ $key ];
-			if ( is_array( $v ) ) {
-				$v = $v[0] ?? '';
+			$value = $bag[ $key ];
+			if ( is_array( $value ) ) {
+				// Multi-valued fields (typical for description/abstract) are
+				// joined with a paragraph break so the caller gets the full
+				// concatenated text, not just the first segment.
+				$value = implode( "\n\n", array_filter( $value, static fn( $v ) => is_string( $v ) && '' !== $v ) );
 			}
-			if ( is_string( $v ) && $v !== '' ) {
-				return $v;
+			$value = is_string( $value ) ? trim( $value ) : '';
+			if ( '' !== $value ) {
+				return $value;
 			}
 		}
 		return null;

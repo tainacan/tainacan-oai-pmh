@@ -75,21 +75,30 @@ class OAI_Client {
 	 * @return true|\WP_Error
 	 */
 	public function validate_url( string $url ) {
-		if ( $url === '' ) {
+		if ( '' === $url ) {
 			return new \WP_Error( 'empty_url', __( 'URL is required.', 'tainacan-oai-pmh' ) );
 		}
 
 		$parts = wp_parse_url( $url );
-		if ( ! $parts || ! isset( $parts['scheme'], $parts['host'] ) ) {
+		if ( ! $parts ) {
 			return new \WP_Error( 'invalid_url', __( 'Malformed URL.', 'tainacan-oai-pmh' ) );
 		}
-		if ( ! in_array( strtolower( $parts['scheme'] ), array( 'http', 'https' ), true ) ) {
+
+		// Check scheme BEFORE host, so file:// (which has scheme but no host)
+		// reports the more informative 'invalid_scheme' rather than 'invalid_url'.
+		if ( ! isset( $parts['scheme'] )
+			|| ! in_array( strtolower( $parts['scheme'] ), array( 'http', 'https' ), true ) ) {
 			return new \WP_Error( 'invalid_scheme', __( 'Only http and https are supported.', 'tainacan-oai-pmh' ) );
+		}
+		if ( ! isset( $parts['host'] ) || '' === $parts['host'] ) {
+			return new \WP_Error( 'invalid_url', __( 'Malformed URL.', 'tainacan-oai-pmh' ) );
 		}
 
 		$allow_local = (bool) apply_filters( 'tainacan_oai_pmh_allow_local_urls', false );
 		if ( ! $allow_local ) {
-			$host = strtolower( $parts['host'] );
+			// wp_parse_url preserves brackets around IPv6 literals ([::1]); strip
+			// them for a clean comparison against the loopback list.
+			$host = strtolower( trim( $parts['host'], '[]' ) );
 			if ( in_array( $host, array( 'localhost', '127.0.0.1', '::1', '0.0.0.0' ), true ) ) {
 				return new \WP_Error( 'local_blocked', __( 'Loopback URLs are blocked. Use the tainacan_oai_pmh_allow_local_urls filter to allow them in development.', 'tainacan-oai-pmh' ) );
 			}
@@ -152,14 +161,17 @@ class OAI_Client {
 	 */
 	public function parse_xml( string $body ) {
 		$prev_internal = libxml_use_internal_errors( true );
-		// LIBXML_NONET disables external entity fetching; with libxml >= 2.9 entity
-		// loading is off by default, but we set it explicitly for older builds.
-		$xml    = simplexml_load_string( $body, \SimpleXMLElement::class, LIBXML_NONET | LIBXML_NOENT );
+		// LIBXML_NONET disables fetching of external resources during parsing.
+		// IMPORTANTLY we do NOT pass LIBXML_NOENT — that flag enables entity
+		// substitution, which is the opposite of what we want. With libxml >= 2.9
+		// external entity loading is off by default; LIBXML_NONET adds the no-net
+		// belt to the suspenders so file:// and remote DTDs are also blocked.
+		$xml    = simplexml_load_string( $body, \SimpleXMLElement::class, LIBXML_NONET );
 		$errors = libxml_get_errors();
 		libxml_clear_errors();
 		libxml_use_internal_errors( $prev_internal );
 
-		if ( $xml === false ) {
+		if ( false === $xml ) {
 			$first = $errors[0] ?? null;
 			$msg   = $first ? trim( $first->message ) : 'unknown';
 			return new \WP_Error( 'xml_parse', sprintf( 'XML parse error: %s', $msg ) );
