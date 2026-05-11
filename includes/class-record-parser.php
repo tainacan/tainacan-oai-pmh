@@ -126,28 +126,38 @@ class Record_Parser {
 	public function parse_xoai_metadata( \SimpleXMLElement $metadata ): array {
 		$bag = array();
 
-		// SimpleXML's namespace-aware iteration is fiddly when the xmlns:doc
-		// declaration sits on the <doc:metadata> element itself rather than
-		// on an ancestor. The robust approach: walk every descendant once
-		// while parser-name-checking each element. The walker treats
-		// <doc:metadata> as a transparent wrapper and starts building the
-		// dotted path at the first <doc:element>.
-		foreach ( $metadata->children( self::XOAI_NS ) as $child ) {
-			$this->walk_xoai_element( $child, '', $bag, self::XOAI_NS );
+		// Re-parse the metadata subtree as its own root document so the
+		// xmlns:doc declaration scope is unambiguous regardless of where
+		// it was placed in the original document. This sidesteps the
+		// SimpleXML quirk where ->children( $ns ) on a parent element
+		// returns nothing if the namespace was first declared on a child.
+		$as_string = $metadata->asXML();
+		if ( false === $as_string ) {
+			return $bag;
+		}
+		$root = simplexml_load_string( $as_string, \SimpleXMLElement::class, LIBXML_NONET );
+		if ( false === $root ) {
+			return $bag;
 		}
 
-		// Fallback: when the xmlns:doc declaration is on <doc:metadata>
-		// itself, the children() call above may return nothing because the
-		// namespace isn't active for the parent's iterator context. Walk all
-		// untyped children and match by their getName() == 'metadata'.
-		if ( empty( $bag ) ) {
-			foreach ( $metadata->children() as $child ) {
-				if ( 'metadata' === $child->getName() ) {
-					$this->walk_xoai_element( $child, '', $bag, self::XOAI_NS );
-				}
-			}
+		// Find xoai elements via xpath (namespace-agnostic via wildcard
+		// or explicit registration). xpath_register works reliably once we
+		// have a freshly-parsed root.
+		$root->registerXPathNamespace( 'xoai', self::XOAI_NS );
+
+		// Two common shapes: a wrapper <doc:metadata> with <doc:element>
+		// children, or direct <doc:element> children at the top level.
+		$starts = $root->xpath( './xoai:metadata/xoai:element' );
+		if ( empty( $starts ) ) {
+			$starts = $root->xpath( './xoai:element' );
+		}
+		if ( ! is_array( $starts ) ) {
+			return $bag;
 		}
 
+		foreach ( $starts as $element ) {
+			$this->walk_xoai_element( $element, '', $bag, self::XOAI_NS );
+		}
 		return $bag;
 	}
 
