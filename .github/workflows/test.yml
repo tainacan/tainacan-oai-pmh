@@ -147,7 +147,12 @@ jobs:
           git clone --depth 1 --branch master https://github.com/tainacan/tainacan.git "${WP_CORE_DIR}/wp-content/plugins/tainacan"
           # Tainacan src/tainacan.php require_once's vendor/autoload.php,
           # which is composer-generated. The clone is sources-only.
-          ( cd "${WP_CORE_DIR}/wp-content/plugins/tainacan" && composer install --no-dev --no-progress --prefer-dist --no-interaction )
+          # --ignore-platform-reqs because Tainacan core's composer.lock pins
+          # phpoffice/phpspreadsheet + maennchen/zipstream which now require
+          # PHP 8.3, but our CI matrix includes 8.1. Those packages aren't
+          # in the autoload path of the base classes we need, so ignoring
+          # platform reqs is safe here.
+          ( cd "${WP_CORE_DIR}/wp-content/plugins/tainacan" && composer install --no-dev --no-progress --prefer-dist --no-interaction --ignore-platform-reqs )
 
       - name: Run PHPUnit
         run: vendor/bin/phpunit --testsuite unit
