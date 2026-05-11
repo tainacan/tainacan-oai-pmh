@@ -145,6 +145,9 @@ jobs:
           WP_CORE_DIR="${TMPDIR:-/tmp}/wordpress"
           mkdir -p "${WP_CORE_DIR}/wp-content/plugins"
           git clone --depth 1 --branch master https://github.com/tainacan/tainacan.git "${WP_CORE_DIR}/wp-content/plugins/tainacan"
+          # Tainacan src/tainacan.php require_once's vendor/autoload.php,
+          # which is composer-generated. The clone is sources-only.
+          ( cd "${WP_CORE_DIR}/wp-content/plugins/tainacan" && composer install --no-dev --no-progress --prefer-dist --no-interaction )
 
       - name: Run PHPUnit
         run: vendor/bin/phpunit --testsuite unit
