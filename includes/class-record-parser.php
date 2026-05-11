@@ -125,12 +125,23 @@ class Record_Parser {
 	 */
 	public function parse_xoai_metadata( \SimpleXMLElement $metadata ): array {
 		$bag = array();
-		$doc = $metadata->children( self::XOAI_NS );
-		if ( ! $doc ) {
+
+		// SimpleXML's ->children( $ns ) behavior varies depending on where the
+		// xmlns:doc declaration sits in the document tree (on the OAI wrapper
+		// vs. on <doc:metadata> itself). xpath() with an explicit namespace
+		// binding is unambiguous. We try both common shapes: a single
+		// <doc:metadata> wrapper, or a top-level set of <doc:element> nodes.
+		$metadata->registerXPathNamespace( 'xoai', self::XOAI_NS );
+		$roots = $metadata->xpath( 'xoai:metadata/xoai:element' );
+		if ( empty( $roots ) ) {
+			$roots = $metadata->xpath( 'xoai:element' );
+		}
+		if ( ! is_array( $roots ) ) {
 			return $bag;
 		}
-		foreach ( $doc as $child ) {
-			$this->walk_xoai_element( $child, '', $bag, self::XOAI_NS );
+
+		foreach ( $roots as $root ) {
+			$this->walk_xoai_element( $root, '', $bag, self::XOAI_NS );
 		}
 		return $bag;
 	}
