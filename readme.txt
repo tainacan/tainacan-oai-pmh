@@ -4,7 +4,7 @@ Tags: oai-pmh, tainacan, dspace, harvester, dublin-core
 Requires at least: 6.0
 Tested up to: 6.9
 Requires PHP: 8.1
-Stable tag: 0.6.2
+Stable tag: 0.6.3
 License: GPLv3 or later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -41,6 +41,52 @@ Yes. The bitstream pipeline is built around DSpace conventions and is the primar
 Yes for metadata. Bitstream download falls back gracefully when the upstream is not DSpace.
 
 == Changelog ==
+
+= 0.6.3 =
+
+Hotfix release. Generalizes the DSpace THUMBNAIL-bundle detection
+heuristic so the right ORIGINAL is found even when the original
+isn't itself a JPG.
+
+Production observation following 0.6.2: items showing
+`uploads/2026/05/Ano3-n.124-1878-com-OCR.pdf.jpg` as Documento —
+a blank cover-page image. The actual PDF (`…-com-OCR.pdf`) carries
+all the content, but the importer never reached it because the
+THUMBNAIL-detection regex only matched `.jpg.jpg` filenames. DSpace
+in fact appends `.jpg` to ANY ORIGINAL filename when it generates
+thumbnails:
+
+  ORIGINAL `foo.pdf`   → THUMBNAIL `foo.pdf.jpg`
+  ORIGINAL `bar.tif`   → THUMBNAIL `bar.tif.jpg`
+  ORIGINAL `baz.jpg`   → THUMBNAIL `baz.jpg.jpg`
+  ORIGINAL `doc.docx`  → THUMBNAIL `doc.docx.jpg`
+
+0.6.3 centralizes the convention into two helpers used by both the
+HTML-scrape fallback and the ORIGINAL probe:
+
+  * Importer::is_dspace_thumbnail_path()   → regex `/\.[a-z0-9]{2,8}\.jpg$/i`
+  * Importer::strip_thumbnail_suffix()     → drops the trailing `.jpg`
+                                             and any query string
+
+The HTML-scrape classifier (fetch_html_bitstreams) now flags every
+double-extension filename as THUMBNAIL so drop_redundant_thumbnails()
+removes it from the array — the real PDF / TIF / etc. coming from
+the same scrape is what lands in Documento.
+
+The probe (probe_dspace_original) now:
+  - Refuses to probe URLs that aren't double-extensions (avoids the
+    earlier bug of treating any `.jpg` URL as a probable thumbnail).
+  - Builds the ORIGINAL candidate by stripping ONLY the trailing
+    `.jpg` (was: stripping `.jpg.jpg` → `.jpg`, which never produced
+    a working candidate for `.pdf.jpg` thumbnails).
+  - Accepts any media content-type (image/*, application/pdf, …) on
+    the HEAD response, not just image/* — the 0.6.2 helper
+    `is_acceptable_media_mime` is reused here.
+
+Items already polluted by 0.6.x: same recovery as 0.6.2 — delete the
+bad attachment plus its `_oai_bitstream_url` postmeta, then re-run
+the harvest. The bitstream-backfill branch now finds and downloads
+the actual PDF/TIF/etc.
 
 = 0.6.2 =
 

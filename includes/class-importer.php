@@ -1745,11 +1745,18 @@ class Importer {
 				$seen[ $href ] = true;
 
 				$path = strtolower( wp_parse_url( $href, PHP_URL_PATH ) ?? '' );
-				// DSpace generates thumbnails as <name>.jpg.jpg in the THUMBNAIL bundle
-				$is_thumbnail = (bool) preg_match( '/\.jpg\.jpg$/', $path );
+				// DSpace generates THUMBNAIL bundle filenames by appending `.jpg`
+				// to the ORIGINAL — works for any source extension (.pdf.jpg,
+				// .tif.jpg, .jpg.jpg, .docx.jpg, …). The previous check only
+				// handled the .jpg.jpg case and silently classified `.pdf.jpg`
+				// derivatives as ORIGINAL, sending users a blank cover-page
+				// image instead of the actual PDF.
+				$is_thumbnail = $this->is_dspace_thumbnail_path( $path );
 
 				$mime = 'application/octet-stream';
-				if ( preg_match( '/\.(jpe?g)(\.jpg)?$/', $path ) ) {
+				if ( $is_thumbnail || preg_match( '/\.(jpe?g)$/', $path ) ) {
+					// Thumbnails are always image/jpeg by DSpace convention
+					// regardless of the prefix-extension shown in the filename.
 					$mime = 'image/jpeg';
 				} elseif ( str_ends_with( $path, '.png' ) ) {
 					$mime = 'image/png';
@@ -1840,14 +1847,18 @@ class Importer {
 	 * DIFFERENT item's original under this thumbnail's name.
 	 */
 	private function probe_dspace_original( string $thumb_url, bool $sslverify, ?int $import_id, string $oai_identifier ): ?array {
-		// Strip exactly one trailing .jpg
-		$stripped = preg_replace( '/\.jpg\.jpg(\?|$)/i', '.jpg$1', $thumb_url, 1, $count );
-		if ( ! $count ) {
+		// Only attempt the probe if the URL actually looks like a DSpace thumbnail
+		// (matches <name>.<ext>.jpg, any extension). Previously we only matched
+		// `.jpg.jpg`, which silently skipped probes for `.pdf.jpg`, `.tif.jpg` etc.
+		$thumb_path = (string) wp_parse_url( $thumb_url, PHP_URL_PATH );
+		if ( ! $this->is_dspace_thumbnail_path( strtolower( $thumb_path ) ) ) {
 			return null;
 		}
 
-		// Drop the query string — without ?sequence=, DSpace matches by filename
-		$candidate = preg_replace( '/\?.*$/', '', $stripped );
+		// Strip the trailing `.jpg` from the thumbnail URL → ORIGINAL candidate.
+		// Works for any prefix-extension: `foo.pdf.jpg` → `foo.pdf`,
+		// `bar.jpg.jpg` → `bar.jpg`, `baz.tif.jpg` → `baz.tif`.
+		$candidate = $this->strip_thumbnail_suffix( $thumb_url );
 
 		$head = wp_remote_head(
 			$candidate,
@@ -1876,12 +1887,15 @@ class Importer {
 			);
 			return null;
 		}
-		$type = (string) wp_remote_retrieve_header( $head, 'content-type' );
-		if ( stripos( $type, 'image/' ) !== 0 ) {
+		$type    = (string) wp_remote_retrieve_header( $head, 'content-type' );
+		$bare_ct = strtolower( trim( explode( ';', $type )[0] ) );
+		// Accept any whitelisted media type — earlier code only accepted image/*,
+		// which dropped PDF originals whose thumbnails were `.pdf.jpg`.
+		if ( $bare_ct === '' || ! $this->is_acceptable_media_mime( $bare_ct ) ) {
 			$this->log_if(
 				$import_id,
 				'INFO',
-				'bitstream.probe_not_image',
+				'bitstream.probe_not_media',
 				'[' . $oai_identifier . '] HEAD ' . $candidate . ' → ' . $type
 			);
 			return null;
@@ -1897,7 +1911,7 @@ class Importer {
 		);
 		return array(
 			'url'    => $candidate,
-			'mime'   => trim( explode( ';', $type )[0] ),
+			'mime'   => $bare_ct,
 			'size'   => $cl,
 			'bundle' => 'ORIGINAL',
 		);
@@ -2093,6 +2107,40 @@ class Importer {
 			}
 		}
 		return true;
+	}
+
+	/**
+	 * Detects DSpace's auto-generated THUMBNAIL filename pattern.
+	 *
+	 * DSpace's image thumbnailer appends a `.jpg` to the ORIGINAL bundle
+	 * filename — regardless of the original's extension — and stores the
+	 * result in the THUMBNAIL bundle. Real-world examples:
+	 *
+	 *   foo.pdf  → foo.pdf.jpg
+	 *   bar.jpg  → bar.jpg.jpg
+	 *   baz.tif  → baz.tif.jpg
+	 *   doc.docx → doc.docx.jpg
+	 *
+	 * Detection rule: the path must end in `.<ext>.jpg` where `<ext>`
+	 * is a short alphanumeric suffix (3-8 chars covers every real case
+	 * we've seen in production).
+	 *
+	 * @param string $path The URL path portion (without query string).
+	 * @return bool True iff the path matches the double-extension pattern.
+	 */
+	private function is_dspace_thumbnail_path( string $path ): bool {
+		return (bool) preg_match( '/\.[a-z0-9]{2,8}\.jpg$/i', $path );
+	}
+
+	/**
+	 * For a thumbnail URL matching is_dspace_thumbnail_path(), returns the
+	 * candidate URL of the matching ORIGINAL by stripping the trailing
+	 * `.jpg` (and any query string). Caller should still HEAD-check the
+	 * result — the original may not exist in every deployment.
+	 */
+	private function strip_thumbnail_suffix( string $thumb_url ): string {
+		$no_query = preg_replace( '/\?.*$/', '', $thumb_url );
+		return preg_replace( '/\.jpg$/i', '', $no_query );
 	}
 
 	/**
