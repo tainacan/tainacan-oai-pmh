@@ -4,7 +4,7 @@ Tags: oai-pmh, tainacan, dspace, harvester, dublin-core
 Requires at least: 6.0
 Tested up to: 6.9
 Requires PHP: 8.1
-Stable tag: 0.6.1
+Stable tag: 0.6.2
 License: GPLv3 or later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -41,6 +41,36 @@ Yes. The bitstream pipeline is built around DSpace conventions and is the primar
 Yes for metadata. Bitstream download falls back gracefully when the upstream is not DSpace.
 
 == Changelog ==
+
+= 0.6.2 =
+
+Hotfix release. Refuses non-media URLs at the bitstream download gate.
+Production observation: a `viewer.html` wrapper served by an upstream
+endpoint was being sideloaded into wp-content/uploads/ as a regular
+attachment and wired into the item's Tainacan `documento` slot,
+replacing the actual PDF/image.
+
+Adds two structural guards in Importer::download_bitstream():
+  * URL-level — refuse bitstreams whose path ends in
+    .html/.htm/.xhtml/.shtml/.php/.phtml/.asp/.aspx/.jsp/.jspx/.cfm/.cgi
+    before the request is even made.
+  * Content-Type — after the HEAD pre-flight, refuse anything outside a
+    whitelist of media mime prefixes (image/, application/pdf,
+    application/postscript, audio/, video/, application/zip,
+    application/x-tar, application/gzip, application/octet-stream).
+    Catches the case where the upstream URL has an innocuous extension
+    but the server actually returns HTML (login walls, error pages,
+    soft-redirected viewer wrappers).
+
+Both gates surface a clean WP_Error with code `not_media`; the existing
+log path renders this as `bitstream.download_failed` with the bare
+mime type for diagnosis.
+
+Items already polluted by 0.6.x do not auto-recover. The bitstream
+backfill branch only fires when `_oai_bitstream_url` postmeta is
+absent, and these items already have it (pointing at the viewer.html).
+To recover: delete the bad attachment + its postmeta, then re-run
+the harvest — the backfill branch will then refetch the real media.
 
 = 0.6.1 =
 

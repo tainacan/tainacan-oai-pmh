@@ -1920,6 +1920,17 @@ class Importer {
 		$max_bytes = max( 1, (int) Settings::get( 'import_max_size_mb', 20 ) ) * 1024 * 1024;
 		$sslverify = (bool) Settings::get( 'importer_sslverify', true );
 
+		// Reject obvious non-media URLs (viewer wrappers, web pages) before
+		// we even hit the network. Caller-provided $bitstream['url'] may have
+		// come from xOAI/HTML scrape/etc; some upstreams expose a viewer.html
+		// or similar HTML wrapper as if it were a downloadable file.
+		if ( ! $this->is_acceptable_media_url( $url, $bitstream['mime'] ?? null ) ) {
+			return new \WP_Error(
+				'not_media',
+				sprintf( 'URL %s is not a media bitstream (extension/mime indicates HTML or unknown).', $url )
+			);
+		}
+
 		// Dedup: same item already has this bitstream attached
 		$existing = get_posts(
 			array(
@@ -1935,7 +1946,12 @@ class Importer {
 			return (int) $existing[0];
 		}
 
-		// Pre-flight size check via HEAD — saves bandwidth on oversize files
+		// Pre-flight size + content-type check via HEAD. Two distinct guards:
+		// (1) refuse oversized files without downloading them;
+		// (2) refuse content-types that aren't media (text/html viewer wrappers,
+		//     login walls, redirects to HTML error pages, …). PHPCS hint
+		//     /text\/html/ on HEAD is the strongest defense — even if the URL
+		//     extension looked OK, a server can still serve HTML for it.
 		$head = wp_remote_head(
 			$url,
 			array(
@@ -1954,6 +1970,15 @@ class Importer {
 						number_format( $cl / 1048576, 1 ),
 						number_format( $max_bytes / 1048576, 0 )
 					)
+				);
+			}
+			$ct = strtolower( (string) wp_remote_retrieve_header( $head, 'content-type' ) );
+			// Extract the bare media type, dropping charset/boundary parameters.
+			$bare_ct = trim( explode( ';', $ct )[0] );
+			if ( $bare_ct !== '' && ! $this->is_acceptable_media_mime( $bare_ct ) ) {
+				return new \WP_Error(
+					'not_media',
+					sprintf( 'Upstream returned content-type %s for %s — refusing to attach as bitstream.', $bare_ct, $url )
 				);
 			}
 		}
@@ -2038,6 +2063,55 @@ class Importer {
 			'application/pdf' => '.pdf',
 		);
 		return $map[ $mime ] ?? '.bin';
+	}
+
+	/**
+	 * URL-level acceptance test for bitstream candidates.
+	 *
+	 * Cheap structural defense: rejects URLs whose path ends in extensions
+	 * that virtually never represent media bitstreams in real OAI/DSpace
+	 * deployments (HTML viewer wrappers, server-side scripts, login walls).
+	 * Caller may also pass a hint mime — if the hint itself is a non-media
+	 * type the URL is rejected even when the extension is innocuous.
+	 *
+	 * Why this exists: some upstreams expose a "viewer.html" or pdf.js
+	 * wrapper page as if it were a downloadable file (seen in the field at
+	 * museuimperial.acervos.museus.gov.br, May 2026 — wrappers landed in
+	 * Tainacan's `documento` slot, replacing the real PDF/image).
+	 */
+	private function is_acceptable_media_url( string $url, ?string $mime = null ): bool {
+		if ( $mime !== null && $mime !== '' && ! $this->is_acceptable_media_mime( strtolower( $mime ) ) ) {
+			return false;
+		}
+
+		$path = strtolower( (string) wp_parse_url( $url, PHP_URL_PATH ) );
+		// Never download these — none of them are media bitstreams.
+		$blocked = array( '.html', '.htm', '.xhtml', '.shtml', '.php', '.phtml', '.asp', '.aspx', '.jsp', '.jspx', '.cfm', '.cgi' );
+		foreach ( $blocked as $ext ) {
+			if ( str_ends_with( $path, $ext ) ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Whitelist of content-types we accept as bitstream payload.
+	 * Conservative: anything not in this set is refused even if the URL
+	 * extension looked safe. Caller is responsible for lowercasing first.
+	 */
+	private function is_acceptable_media_mime( string $bare_mime ): bool {
+		if ( $bare_mime === '' ) {
+			return true; // No hint — let downstream HEAD check decide.
+		}
+		// Group prefixes covering anything we'd want to sideload.
+		$allowed_prefixes = array( 'image/', 'application/pdf', 'application/postscript', 'audio/', 'video/', 'application/zip', 'application/x-tar', 'application/gzip', 'application/octet-stream' );
+		foreach ( $allowed_prefixes as $prefix ) {
+			if ( str_starts_with( $bare_mime, $prefix ) ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
