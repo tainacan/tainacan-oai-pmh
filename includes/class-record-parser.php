@@ -126,37 +126,13 @@ class Record_Parser {
 	public function parse_xoai_metadata( \SimpleXMLElement $metadata ): array {
 		$bag = array();
 
-		// Re-parse the metadata subtree as its own root document so the
-		// xmlns:doc declaration scope is unambiguous regardless of where
-		// it was placed in the original document. This sidesteps the
-		// SimpleXML quirk where ->children( $ns ) on a parent element
-		// returns nothing if the namespace was first declared on a child.
-		$as_string = $metadata->asXML();
-		if ( false === $as_string ) {
-			return $bag;
-		}
-		$root = simplexml_load_string( $as_string, \SimpleXMLElement::class, LIBXML_NONET );
-		if ( false === $root ) {
-			return $bag;
-		}
-
-		// Find xoai elements via xpath (namespace-agnostic via wildcard
-		// or explicit registration). xpath_register works reliably once we
-		// have a freshly-parsed root.
-		$root->registerXPathNamespace( 'xoai', self::XOAI_NS );
-
-		// Two common shapes: a wrapper <doc:metadata> with <doc:element>
-		// children, or direct <doc:element> children at the top level.
-		$starts = $root->xpath( './xoai:metadata/xoai:element' );
-		if ( empty( $starts ) ) {
-			$starts = $root->xpath( './xoai:element' );
-		}
-		if ( ! is_array( $starts ) ) {
-			return $bag;
-		}
-
-		foreach ( $starts as $element ) {
-			$this->walk_xoai_element( $element, '', $bag, self::XOAI_NS );
+		// Iterate xoai-namespaced children of the OAI <metadata> wrapper.
+		// In well-formed DSpace responses the xmlns:doc declaration sits on
+		// an ancestor (typically <OAI-PMH>), so the namespace is in scope at
+		// this level and ->children( \$ns ) finds the <doc:metadata> /
+		// <doc:element> wrappers correctly.
+		foreach ( $metadata->children( self::XOAI_NS ) as $child ) {
+			$this->walk_xoai_element( $child, '', $bag, self::XOAI_NS );
 		}
 		return $bag;
 	}
