@@ -4,7 +4,7 @@ Tags: oai-pmh, tainacan, dspace, harvester, dublin-core
 Requires at least: 6.0
 Tested up to: 6.9
 Requires PHP: 8.1
-Stable tag: 0.6.0
+Stable tag: 0.6.1
 License: GPLv3 or later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -41,6 +41,27 @@ Yes. The bitstream pipeline is built around DSpace conventions and is the primar
 Yes for metadata. Bitstream download falls back gracefully when the upstream is not DSpace.
 
 == Changelog ==
+
+= 0.6.1 =
+
+Hotfix release. Restores set_time_limit(0) at the head of both
+process_batch() and harvest_loop() — 0.6.0 removed them as part of the
+discouraged-function cleanup, but production observation shows hosts
+with tight max_execution_time settings (30s default in many shared-
+hosting PHP configurations) killing the worker mid-bitstream-download.
+The record's metadata commits before the bitstream phase runs, so the
+item lands in Tainacan with a broken "documento" attachment: the
+bibliographic metadata is correct but the PDF/image viewer comes up
+empty.
+
+Each set_time_limit call now carries a focused line-level phpcs:ignore
+with a specific technical reason that survives review. wp_raise_memory_limit('admin')
+remains for memory headroom.
+
+If your install was affected, retrigger the broken imports after
+upgrading: the dedup short-circuit will skip already-imported records,
+but the bitstream-backfill path in enrich_item_with_bitstreams() will
+fill in the missing attachments on a re-run.
 
 = 0.6.0 =
 

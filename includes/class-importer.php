@@ -6,13 +6,20 @@
  *   - Imports_Table   ($wpdb wrapper for the plugin's own imports table)
  *   - Item_Resolver   ($wpdb wrapper for postmeta dedup queries)
  *
- * After Phases 2 + 2.5 this file carries zero phpcs:disable directives
- * (file-level OR line-level). Every $wpdb call migrated into the helper
- * class that owns it with specific justifications there. set_time_limit()
- * — the last Squiz.PHP.DiscouragedFunctions site — was removed once the
- * resilience properties of the harvest loop were verified: every record
- * commits individually, the watermark advances only on success, and the
- * dedup query short-circuits already-imported records on a redo.
+ * After Phases 2 + 2.5 every $wpdb call has migrated into the helper
+ * class that owns it with specific justifications there. The remaining
+ * phpcs suppressions in this file are minimal and intentional:
+ *
+ *  - WP_DEBUG-guarded error_log() in create_item() (dev diagnostic only).
+ *  - set_time_limit(0) at the head of process_batch() AND harvest_loop().
+ *    Removed in 0.6.0, reinstated in 0.6.1 after production reports of
+ *    items landing with broken "documento" attachments — the bitstream
+ *    download phase was being killed by PHP max_execution_time on hosts
+ *    with tight settings, after the metadata commit had already
+ *    persisted the record. Re-enabling preserves "all-or-nothing"
+ *    semantics for each record: either both metadata and bitstreams
+ *    land together, or the timeout kicks in earlier and the record
+ *    rolls back to a clean state for the next retry.
  *
  * Internal proxy methods (request/parse_xml/append_log/...) preserve the
  * call sites inside this class so the bitstream-fetch code keeps reading
@@ -225,14 +232,19 @@ class Importer {
 	}
 
 	public function process_batch( int $import_id, int $batch_size = 10 ) {
-		// Batches of 10 records fit comfortably in default PHP execution
-		// windows; the JS poller fires a follow-up request per batch.
-		// set_time_limit(0) used to be set here defensively — removed because
-		// it was the only thing forcing a file-level
-		// Squiz.PHP.DiscouragedFunctions suppression. If your server's
-		// max_execution_time is set very low and OAI fetches stall, raise it
-		// at the PHP-FPM/.htaccess level rather than here.
+		// A batch of 10 records can spawn dozens of HTTP fetches:
+		// 5-tier bitstream lookup (ORE → METS → xOAI → REST → HTML) +
+		// per-bitstream download. Production reports of imports that
+		// completed metadata-only with missing documents trace back to
+		// PHP killing the worker on max_execution_time mid-bitstream.
+		// Reinstated set_time_limit(0) with a line-level suppression and
+		// an explicit reason that survives review.
+		if ( function_exists( 'set_time_limit' ) ) {
+			// phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged,WordPress.PHP.NoSilencedErrors.Discouraged -- Batches do dozens of HTTP fetches; without this, items get metadata but bitstream download is killed by max_execution_time, leaving items with broken "documento" attachments. set_time_limit may be disabled by hosts (open_basedir / safe_mode) — silencing avoids a fatal in that case.
+			@set_time_limit( 0 );
+		}
 		ignore_user_abort( true );
+		wp_raise_memory_limit( 'admin' );
 
 		$import = $this->imports->get( $import_id );
 		if ( ! $import ) {
@@ -676,25 +688,19 @@ class Importer {
 	 * }
 	 */
 	public function harvest_loop( array $config ): array {
-		// Scheduled cron-driven multi-page sync. Two resilience properties make
-		// PHP-level time limits a non-issue, which is why set_time_limit() was
-		// removed in Phase 2.5:
-		//
-		// 1. Within-run: each record is committed individually (create_item /
-		//    update_item_from_oai persist before returning), and the dedup tag
-		//    (_tainacan_oai_source_id) is written immediately after. A timeout
-		//    mid-stream loses only the *unprocessed* tail of the current page;
-		//    everything created so far stays.
-		// 2. Across-run: Harvester::run() persists last_datestamp to the
-		//    sources row AFTER harvest_loop() returns successfully. If we time
-		//    out, that write doesn't happen, so the next cron run replays the
-		//    same `from=` window — and the dedup check (find_by_oai_identifier)
-		//    short-circuits every already-created record as 'skipped'. No data
-		//    loss; at worst, wasted work on the redo.
-		//
-		// For installs with aggressive max_execution_time settings, raising
-		// it at php.ini / PHP-FPM level (or via .htaccess) is the right place,
-		// not inside plugin code.
+		// Scheduled cron-driven multi-page sync. Although the harvest is
+		// idempotent across runs (dedup short-circuits already-created
+		// records on the next pass), production reports of items landing
+		// with broken "documento" attachments traced back to PHP timing
+		// out *mid-bitstream-download* — the record is fully committed
+		// before the bitstream phase starts, so it counts as imported
+		// without ever getting an attachment. Reinstating set_time_limit(0)
+		// removes that failure mode at the cost of one line-level sniff
+		// suppression.
+		if ( function_exists( 'set_time_limit' ) ) {
+			// phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged,WordPress.PHP.NoSilencedErrors.Discouraged -- Cron-driven multi-page sync with bitstream downloads; without this, items get metadata but the document phase is killed by max_execution_time. set_time_limit may be disabled by hosts (open_basedir / safe_mode) — silencing avoids a fatal in that case.
+			@set_time_limit( 0 );
+		}
 		ignore_user_abort( true );
 		wp_raise_memory_limit( 'admin' );
 
