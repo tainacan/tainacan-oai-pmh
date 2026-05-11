@@ -1,244 +1,278 @@
 <?php
 namespace Tainacan_OAI_PMH;
 
-if (!defined('ABSPATH')) exit;
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
 
 /**
  * Settings class using Tainacan Settings API
  * Adds OAI-PMH settings to Tainacan Settings Page
  */
 class Settings {
-    
-    /**
-     * Initialize settings
-     */
-    public static function init() {
-        add_action('admin_init', [__CLASS__, 'register_settings']);
-    }
-    
-    /**
-     * Register settings in Tainacan Settings Page
-     */
-    public static function register_settings() {
-        // Add section to Tainacan settings page
-        add_settings_section(
-            'tainacan_oai_pmh_settings',
-            __('OAI-PMH', 'tainacan-oai-pmh'),
-            [__CLASS__, 'section_description'],
-            'tainacan_settings'
-        );
-        
-        // Get Tainacan Settings instance
-        $tainacan_settings = \Tainacan\Settings::get_instance();
-        
-        // Repository Name
-        $tainacan_settings->create_tainacan_setting([
-            'id' => 'oai_repository_name',
-            'title' => __('Repository Name', 'tainacan-oai-pmh'),
-            'section' => 'tainacan_oai_pmh_settings',
-            'type' => 'string',
-            'input_type' => 'text',
-            'description' => __('Name displayed in OAI-PMH Identify response.', 'tainacan-oai-pmh'),
-            'default' => get_bloginfo('name')
-        ]);
-        
-        // Admin Email
-        $tainacan_settings->create_tainacan_setting([
-            'id' => 'oai_admin_email',
-            'title' => __('Admin Email', 'tainacan-oai-pmh'),
-            'section' => 'tainacan_oai_pmh_settings',
-            'type' => 'string',
-            'input_type' => 'email',
-            'description' => __('Contact email for harvesters.', 'tainacan-oai-pmh'),
-            'default' => get_option('admin_email')
-        ]);
-        
-        // Max Records per Response
-        $tainacan_settings->create_tainacan_setting([
-            'id' => 'oai_max_records',
-            'title' => __('Records per Response', 'tainacan-oai-pmh'),
-            'section' => 'tainacan_oai_pmh_settings',
-            'type' => 'integer',
-            'input_type' => 'number',
-            'input_attrs' => 'min="10" max="500"',
-            'description' => __('Maximum records per OAI-PMH request (10-500).', 'tainacan-oai-pmh'),
-            'default' => 100
-        ]);
-        
-        // Token Expiry
-        $tainacan_settings->create_tainacan_setting([
-            'id' => 'oai_token_expiry',
-            'title' => __('Token Expiry (hours)', 'tainacan-oai-pmh'),
-            'section' => 'tainacan_oai_pmh_settings',
-            'type' => 'integer',
-            'input_type' => 'number',
-            'input_attrs' => 'min="1" max="168"',
-            'description' => __('How long resumption tokens remain valid.', 'tainacan-oai-pmh'),
-            'default' => 24
-        ]);
-        
-        // Cache Enabled
-        $tainacan_settings->create_tainacan_setting([
-            'id' => 'oai_cache_enabled',
-            'title' => __('Enable Cache', 'tainacan-oai-pmh'),
-            'section' => 'tainacan_oai_pmh_settings',
-            'type' => 'boolean',
-            'input_type' => 'checkbox',
-            'label' => __('Use MySQL cache for faster responses', 'tainacan-oai-pmh'),
-            'default' => true
-        ]);
-        
-        // Auto-Indexing
-        $tainacan_settings->create_tainacan_setting([
-            'id' => 'oai_auto_index',
-            'title' => __('Auto-Indexing', 'tainacan-oai-pmh'),
-            'section' => 'tainacan_oai_pmh_settings',
-            'type' => 'boolean',
-            'input_type' => 'checkbox',
-            'label' => __('Automatically index items when saved', 'tainacan-oai-pmh'),
-            'default' => true
-        ]);
-        
-        // Logging
-        $tainacan_settings->create_tainacan_setting([
-            'id' => 'oai_log_enabled',
-            'title' => __('Request Logging', 'tainacan-oai-pmh'),
-            'section' => 'tainacan_oai_pmh_settings',
-            'type' => 'boolean',
-            'input_type' => 'checkbox',
-            'label' => __('Log requests for monitoring', 'tainacan-oai-pmh'),
-            'default' => true
-        ]);
-        
-        // Rate Limiting
-        $tainacan_settings->create_tainacan_setting([
-            'id' => 'oai_rate_limit_enabled',
-            'title' => __('Rate Limiting', 'tainacan-oai-pmh'),
-            'section' => 'tainacan_oai_pmh_settings',
-            'type' => 'boolean',
-            'input_type' => 'checkbox',
-            'label' => __('Protect against excessive requests', 'tainacan-oai-pmh'),
-            'default' => true
-        ]);
-        
-        // Rate Limit Threshold
-        $tainacan_settings->create_tainacan_setting([
-            'id' => 'oai_rate_limit_threshold',
-            'title' => __('Rate Limit (req/min)', 'tainacan-oai-pmh'),
-            'section' => 'tainacan_oai_pmh_settings',
-            'type' => 'integer',
-            'input_type' => 'number',
-            'input_attrs' => 'min="10" max="1000"',
-            'description' => __('Max requests per minute before blocking.', 'tainacan-oai-pmh'),
-            'default' => 60
-        ]);
-        
-        // Whitelist
-        $tainacan_settings->create_tainacan_setting([
-            'id' => 'oai_rate_limit_whitelist',
-            'title' => __('Rate Limit Whitelist', 'tainacan-oai-pmh'),
-            'section' => 'tainacan_oai_pmh_settings',
-            'type' => 'string',
-            'input_type' => 'textarea',
-            'description' => __('IPs to skip rate limiting (one per line).', 'tainacan-oai-pmh'),
-            'default' => ''
-        ]);
 
-        // Trust forwarded headers (only enable if behind a real reverse proxy)
-        $tainacan_settings->create_tainacan_setting([
-            'id' => 'oai_trust_proxy_headers',
-            'title' => __('Trust Proxy Headers', 'tainacan-oai-pmh'),
-            'section' => 'tainacan_oai_pmh_settings',
-            'type' => 'boolean',
-            'input_type' => 'checkbox',
-            'label' => __('Use X-Forwarded-For for client IP (only enable behind a trusted proxy).', 'tainacan-oai-pmh'),
-            'default' => false
-        ]);
+	/**
+	 * Initialize settings
+	 */
+	public static function init() {
+		add_action( 'admin_init', array( __CLASS__, 'register_settings' ) );
+	}
 
-        // Importer: SSL verification
-        $tainacan_settings->create_tainacan_setting([
-            'id' => 'oai_importer_sslverify',
-            'title' => __('Importer: Verify SSL', 'tainacan-oai-pmh'),
-            'section' => 'tainacan_oai_pmh_settings',
-            'type' => 'boolean',
-            'input_type' => 'checkbox',
-            'label' => __('Verify SSL certificates of remote OAI repositories (recommended).', 'tainacan-oai-pmh'),
-            'default' => true
-        ]);
+	/**
+	 * Register settings in Tainacan Settings Page
+	 */
+	public static function register_settings() {
+		// Add section to Tainacan settings page
+		add_settings_section(
+			'tainacan_oai_pmh_settings',
+			__( 'OAI-PMH', 'tainacan-oai-pmh' ),
+			array( __CLASS__, 'section_description' ),
+			'tainacan_settings'
+		);
 
-        // Importer: allow private IPs (development convenience)
-        $tainacan_settings->create_tainacan_setting([
-            'id' => 'oai_importer_allow_private_ips',
-            'title' => __('Importer: Allow Private IPs', 'tainacan-oai-pmh'),
-            'section' => 'tainacan_oai_pmh_settings',
-            'type' => 'boolean',
-            'input_type' => 'checkbox',
-            'label' => __('Allow imports from private/loopback addresses (use only on dev).', 'tainacan-oai-pmh'),
-            'default' => false
-        ]);
+		// Get Tainacan Settings instance
+		$tainacan_settings = \Tainacan\Settings::get_instance();
 
-        // Importer: timeout
-        $tainacan_settings->create_tainacan_setting([
-            'id' => 'oai_importer_timeout',
-            'title' => __('Importer: Request Timeout (seconds)', 'tainacan-oai-pmh'),
-            'section' => 'tainacan_oai_pmh_settings',
-            'type' => 'integer',
-            'input_type' => 'number',
-            'input_attrs' => 'min="5" max="600"',
-            'description' => __('How long to wait for a remote OAI request before failing.', 'tainacan-oai-pmh'),
-            'default' => 60
-        ]);
+		// Repository Name
+		$tainacan_settings->create_tainacan_setting(
+			array(
+				'id'          => 'oai_repository_name',
+				'title'       => __( 'Repository Name', 'tainacan-oai-pmh' ),
+				'section'     => 'tainacan_oai_pmh_settings',
+				'type'        => 'string',
+				'input_type'  => 'text',
+				'description' => __( 'Name displayed in OAI-PMH Identify response.', 'tainacan-oai-pmh' ),
+				'default'     => get_bloginfo( 'name' ),
+			)
+		);
 
-        // Importer: download bitstreams (DSpace ORE)
-        $tainacan_settings->create_tainacan_setting([
-            'id' => 'oai_import_bitstreams',
-            'title' => __('Importer: Download Bitstreams', 'tainacan-oai-pmh'),
-            'section' => 'tainacan_oai_pmh_settings',
-            'type' => 'boolean',
-            'input_type' => 'checkbox',
-            'label' => __('Download images/files from DSpace-style repositories (ORE format) and attach to imported items.', 'tainacan-oai-pmh'),
-            'default' => true
-        ]);
+		// Admin Email
+		$tainacan_settings->create_tainacan_setting(
+			array(
+				'id'          => 'oai_admin_email',
+				'title'       => __( 'Admin Email', 'tainacan-oai-pmh' ),
+				'section'     => 'tainacan_oai_pmh_settings',
+				'type'        => 'string',
+				'input_type'  => 'email',
+				'description' => __( 'Contact email for harvesters.', 'tainacan-oai-pmh' ),
+				'default'     => get_option( 'admin_email' ),
+			)
+		);
 
-        // Importer: max bitstream size (MB)
-        $tainacan_settings->create_tainacan_setting([
-            'id' => 'oai_import_max_size_mb',
-            'title' => __('Importer: Max Bitstream Size (MB)', 'tainacan-oai-pmh'),
-            'section' => 'tainacan_oai_pmh_settings',
-            'type' => 'integer',
-            'input_type' => 'number',
-            'input_attrs' => 'min="1" max="500"',
-            'description' => __('Skip bitstreams larger than this. Default 20 MB.', 'tainacan-oai-pmh'),
-            'default' => 20
-        ]);
-    }
-    
-    /**
-     * Section description callback
-     */
-    public static function section_description() {
-        $endpoint = rest_url('tainacan-oai/v1/oai');
-        echo '<p class="settings-section-description">';
-        echo '<strong>' . esc_html__('Your OAI-PMH Endpoint:', 'tainacan-oai-pmh') . '</strong> ';
-        echo '<code>' . esc_html($endpoint) . '</code>';
-        echo '<br><br>';
-        echo '<a href="' . esc_url(admin_url('admin.php?page=tainacan_oai_pmh')) . '" class="button">';
-        echo esc_html__('Open OAI-PMH Dashboard', 'tainacan-oai-pmh');
-        echo '</a>';
-        echo '</p>';
-    }
-    
-    /**
-     * Get setting value (with tainacan_option_ prefix)
-     */
-    public static function get($key, $default = null) {
-        return get_option('tainacan_option_oai_' . $key, $default);
-    }
-    
-    /**
-     * Update setting value
-     */
-    public static function set($key, $value) {
-        return update_option('tainacan_option_oai_' . $key, $value);
-    }
+		// Max Records per Response
+		$tainacan_settings->create_tainacan_setting(
+			array(
+				'id'          => 'oai_max_records',
+				'title'       => __( 'Records per Response', 'tainacan-oai-pmh' ),
+				'section'     => 'tainacan_oai_pmh_settings',
+				'type'        => 'integer',
+				'input_type'  => 'number',
+				'input_attrs' => 'min="10" max="500"',
+				'description' => __( 'Maximum records per OAI-PMH request (10-500).', 'tainacan-oai-pmh' ),
+				'default'     => 100,
+			)
+		);
+
+		// Token Expiry
+		$tainacan_settings->create_tainacan_setting(
+			array(
+				'id'          => 'oai_token_expiry',
+				'title'       => __( 'Token Expiry (hours)', 'tainacan-oai-pmh' ),
+				'section'     => 'tainacan_oai_pmh_settings',
+				'type'        => 'integer',
+				'input_type'  => 'number',
+				'input_attrs' => 'min="1" max="168"',
+				'description' => __( 'How long resumption tokens remain valid.', 'tainacan-oai-pmh' ),
+				'default'     => 24,
+			)
+		);
+
+		// Cache Enabled
+		$tainacan_settings->create_tainacan_setting(
+			array(
+				'id'         => 'oai_cache_enabled',
+				'title'      => __( 'Enable Cache', 'tainacan-oai-pmh' ),
+				'section'    => 'tainacan_oai_pmh_settings',
+				'type'       => 'boolean',
+				'input_type' => 'checkbox',
+				'label'      => __( 'Use MySQL cache for faster responses', 'tainacan-oai-pmh' ),
+				'default'    => true,
+			)
+		);
+
+		// Auto-Indexing
+		$tainacan_settings->create_tainacan_setting(
+			array(
+				'id'         => 'oai_auto_index',
+				'title'      => __( 'Auto-Indexing', 'tainacan-oai-pmh' ),
+				'section'    => 'tainacan_oai_pmh_settings',
+				'type'       => 'boolean',
+				'input_type' => 'checkbox',
+				'label'      => __( 'Automatically index items when saved', 'tainacan-oai-pmh' ),
+				'default'    => true,
+			)
+		);
+
+		// Logging
+		$tainacan_settings->create_tainacan_setting(
+			array(
+				'id'         => 'oai_log_enabled',
+				'title'      => __( 'Request Logging', 'tainacan-oai-pmh' ),
+				'section'    => 'tainacan_oai_pmh_settings',
+				'type'       => 'boolean',
+				'input_type' => 'checkbox',
+				'label'      => __( 'Log requests for monitoring', 'tainacan-oai-pmh' ),
+				'default'    => true,
+			)
+		);
+
+		// Rate Limiting
+		$tainacan_settings->create_tainacan_setting(
+			array(
+				'id'         => 'oai_rate_limit_enabled',
+				'title'      => __( 'Rate Limiting', 'tainacan-oai-pmh' ),
+				'section'    => 'tainacan_oai_pmh_settings',
+				'type'       => 'boolean',
+				'input_type' => 'checkbox',
+				'label'      => __( 'Protect against excessive requests', 'tainacan-oai-pmh' ),
+				'default'    => true,
+			)
+		);
+
+		// Rate Limit Threshold
+		$tainacan_settings->create_tainacan_setting(
+			array(
+				'id'          => 'oai_rate_limit_threshold',
+				'title'       => __( 'Rate Limit (req/min)', 'tainacan-oai-pmh' ),
+				'section'     => 'tainacan_oai_pmh_settings',
+				'type'        => 'integer',
+				'input_type'  => 'number',
+				'input_attrs' => 'min="10" max="1000"',
+				'description' => __( 'Max requests per minute before blocking.', 'tainacan-oai-pmh' ),
+				'default'     => 60,
+			)
+		);
+
+		// Whitelist
+		$tainacan_settings->create_tainacan_setting(
+			array(
+				'id'          => 'oai_rate_limit_whitelist',
+				'title'       => __( 'Rate Limit Whitelist', 'tainacan-oai-pmh' ),
+				'section'     => 'tainacan_oai_pmh_settings',
+				'type'        => 'string',
+				'input_type'  => 'textarea',
+				'description' => __( 'IPs to skip rate limiting (one per line).', 'tainacan-oai-pmh' ),
+				'default'     => '',
+			)
+		);
+
+		// Trust forwarded headers (only enable if behind a real reverse proxy)
+		$tainacan_settings->create_tainacan_setting(
+			array(
+				'id'         => 'oai_trust_proxy_headers',
+				'title'      => __( 'Trust Proxy Headers', 'tainacan-oai-pmh' ),
+				'section'    => 'tainacan_oai_pmh_settings',
+				'type'       => 'boolean',
+				'input_type' => 'checkbox',
+				'label'      => __( 'Use X-Forwarded-For for client IP (only enable behind a trusted proxy).', 'tainacan-oai-pmh' ),
+				'default'    => false,
+			)
+		);
+
+		// Importer: SSL verification
+		$tainacan_settings->create_tainacan_setting(
+			array(
+				'id'         => 'oai_importer_sslverify',
+				'title'      => __( 'Importer: Verify SSL', 'tainacan-oai-pmh' ),
+				'section'    => 'tainacan_oai_pmh_settings',
+				'type'       => 'boolean',
+				'input_type' => 'checkbox',
+				'label'      => __( 'Verify SSL certificates of remote OAI repositories (recommended).', 'tainacan-oai-pmh' ),
+				'default'    => true,
+			)
+		);
+
+		// Importer: allow private IPs (development convenience)
+		$tainacan_settings->create_tainacan_setting(
+			array(
+				'id'         => 'oai_importer_allow_private_ips',
+				'title'      => __( 'Importer: Allow Private IPs', 'tainacan-oai-pmh' ),
+				'section'    => 'tainacan_oai_pmh_settings',
+				'type'       => 'boolean',
+				'input_type' => 'checkbox',
+				'label'      => __( 'Allow imports from private/loopback addresses (use only on dev).', 'tainacan-oai-pmh' ),
+				'default'    => false,
+			)
+		);
+
+		// Importer: timeout
+		$tainacan_settings->create_tainacan_setting(
+			array(
+				'id'          => 'oai_importer_timeout',
+				'title'       => __( 'Importer: Request Timeout (seconds)', 'tainacan-oai-pmh' ),
+				'section'     => 'tainacan_oai_pmh_settings',
+				'type'        => 'integer',
+				'input_type'  => 'number',
+				'input_attrs' => 'min="5" max="600"',
+				'description' => __( 'How long to wait for a remote OAI request before failing.', 'tainacan-oai-pmh' ),
+				'default'     => 60,
+			)
+		);
+
+		// Importer: download bitstreams (DSpace ORE)
+		$tainacan_settings->create_tainacan_setting(
+			array(
+				'id'         => 'oai_import_bitstreams',
+				'title'      => __( 'Importer: Download Bitstreams', 'tainacan-oai-pmh' ),
+				'section'    => 'tainacan_oai_pmh_settings',
+				'type'       => 'boolean',
+				'input_type' => 'checkbox',
+				'label'      => __( 'Download images/files from DSpace-style repositories (ORE format) and attach to imported items.', 'tainacan-oai-pmh' ),
+				'default'    => true,
+			)
+		);
+
+		// Importer: max bitstream size (MB)
+		$tainacan_settings->create_tainacan_setting(
+			array(
+				'id'          => 'oai_import_max_size_mb',
+				'title'       => __( 'Importer: Max Bitstream Size (MB)', 'tainacan-oai-pmh' ),
+				'section'     => 'tainacan_oai_pmh_settings',
+				'type'        => 'integer',
+				'input_type'  => 'number',
+				'input_attrs' => 'min="1" max="500"',
+				'description' => __( 'Skip bitstreams larger than this. Default 20 MB.', 'tainacan-oai-pmh' ),
+				'default'     => 20,
+			)
+		);
+	}
+
+	/**
+	 * Section description callback
+	 */
+	public static function section_description() {
+		$endpoint = rest_url( 'tainacan-oai/v1/oai' );
+		echo '<p class="settings-section-description">';
+		echo '<strong>' . esc_html__( 'Your OAI-PMH Endpoint:', 'tainacan-oai-pmh' ) . '</strong> ';
+		echo '<code>' . esc_html( $endpoint ) . '</code>';
+		echo '<br><br>';
+		echo '<a href="' . esc_url( admin_url( 'admin.php?page=tainacan_oai_pmh' ) ) . '" class="button">';
+		echo esc_html__( 'Open OAI-PMH Dashboard', 'tainacan-oai-pmh' );
+		echo '</a>';
+		echo '</p>';
+	}
+
+	/**
+	 * Get setting value (with tainacan_option_ prefix)
+	 */
+	public static function get( $key, $default = null ) {
+		return get_option( 'tainacan_option_oai_' . $key, $default );
+	}
+
+	/**
+	 * Update setting value
+	 */
+	public static function set( $key, $value ) {
+		return update_option( 'tainacan_option_oai_' . $key, $value );
+	}
 }
