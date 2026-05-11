@@ -1106,25 +1106,21 @@ class Importer {
 			implode( ', ', array_map( fn( $b ) => ( $b['bundle'] ?? '?' ) . ' ' . basename( wp_parse_url( $b['url'], PHP_URL_PATH ) ?: '' ), $bitstreams ) )
 		);
 
-		// Drop THUMBNAIL bundle when at least one ORIGINAL exists. The DSpace
-		// THUMBNAILs are small auto-derivatives — WordPress generates its own
-		// sizes from the ORIGINAL on attachment_id, so keeping the upstream
-		// derivative just clutters Anexos with redundant low-res copies.
-		// When no ORIGINAL is available we keep the THUMBNAILs as visual fallback.
-		$bitstreams = $this->drop_redundant_thumbnails( $bitstreams, $oai_identifier, $import_id );
-
-		// Process ORIGINALs first so we can promote one before the THUMBNAILs land
-		usort(
-			$bitstreams,
-			function ( $a, $b ) {
-				$rank = fn( $x ) => $x['bundle'] === 'ORIGINAL' ? 0 : 1;
-				return $rank( $a ) <=> $rank( $b );
-			}
-		);
+		// Two-pass download policy: try every ORIGINAL first; only fall back to
+		// THUMBNAILs if NO ORIGINAL attached successfully. Replaces the previous
+		// preemptive drop_redundant_thumbnails() — that approach left items with
+		// completely empty Documento when the ORIGINAL failed download (e.g.
+		// .pdf rejected as too_large for big periodicals). With the two-pass
+		// pattern, the small .pdf.jpg cover-page thumbnail can serve as the
+		// fallback Documento instead of nothing.
+		$originals  = array_values( array_filter( $bitstreams, fn( $b ) => ( $b['bundle'] ?? '' ) === 'ORIGINAL' ) );
+		$thumbnails = array_values( array_filter( $bitstreams, fn( $b ) => ( $b['bundle'] ?? '' ) === 'THUMBNAIL' ) );
 
 		$first_original_id  = null;
 		$first_thumbnail_id = null;
-		foreach ( $bitstreams as $bs ) {
+
+		// Pass 1: ORIGINALs.
+		foreach ( $originals as $bs ) {
 			$attachment_id = $this->download_bitstream( $item_id, $bs );
 			if ( is_wp_error( $attachment_id ) ) {
 				$errors[] = $bs['url'] . ': ' . $attachment_id->get_error_message();
@@ -1140,13 +1136,46 @@ class Importer {
 				$import_id,
 				'INFO',
 				'bitstream.attached',
-				'[' . $oai_identifier . '] ' . ( $bs['bundle'] ?? 'ORIGINAL' ) . ' → attachment ' . (int) $attachment_id
+				'[' . $oai_identifier . '] ORIGINAL → attachment ' . (int) $attachment_id
 			);
-			if ( $first_original_id === null && ( $bs['bundle'] ?? '' ) === 'ORIGINAL' ) {
+			if ( $first_original_id === null ) {
 				$first_original_id = (int) $attachment_id;
 			}
-			if ( $first_thumbnail_id === null && ( $bs['bundle'] ?? '' ) === 'THUMBNAIL' ) {
-				$first_thumbnail_id = (int) $attachment_id;
+		}
+
+		// Pass 2: THUMBNAILs — only when no ORIGINAL attached. Keeps Anexos clean
+		// in the happy path (ORIGINAL worked, no need to clutter with thumbnails)
+		// while ensuring the item still gets visual representation when every
+		// ORIGINAL bombed (typical for full-issue periodical PDFs that exceed
+		// the size cap).
+		if ( $first_original_id === null && ! empty( $thumbnails ) ) {
+			$this->log_if(
+				$import_id,
+				'INFO',
+				'bitstream.thumbnail_fallback',
+				'[' . $oai_identifier . '] No ORIGINAL attached (failures above) — trying ' . count( $thumbnails ) . ' THUMBNAIL bitstream(s) as fallback'
+			);
+			foreach ( $thumbnails as $bs ) {
+				$attachment_id = $this->download_bitstream( $item_id, $bs );
+				if ( is_wp_error( $attachment_id ) ) {
+					$errors[] = $bs['url'] . ': ' . $attachment_id->get_error_message();
+					$this->log_if(
+						$import_id,
+						'WARN',
+						'bitstream.download_failed',
+						'[' . $oai_identifier . '] ' . $bs['url'] . ' → ' . $attachment_id->get_error_message()
+					);
+					continue;
+				}
+				$this->log_if(
+					$import_id,
+					'INFO',
+					'bitstream.attached',
+					'[' . $oai_identifier . '] THUMBNAIL (fallback) → attachment ' . (int) $attachment_id
+				);
+				if ( $first_thumbnail_id === null ) {
+					$first_thumbnail_id = (int) $attachment_id;
+				}
 			}
 		}
 
@@ -1229,40 +1258,6 @@ class Importer {
 		}
 
 		return $errors;
-	}
-
-	/**
-	 * Removes THUMBNAIL bundle bitstreams from the list when at least one
-	 * ORIGINAL is present. WordPress already generates its own thumbnail
-	 * sizes (150x150, 300x300, etc.) from any image attachment, so the
-	 * upstream DSpace derivatives add no value to the Anexos panel.
-	 *
-	 * Pass-through when only THUMBNAILs are available (so the item still
-	 * gets a miniatura as a last resort).
-	 */
-	private function drop_redundant_thumbnails( array $bitstreams, string $oai_identifier, ?int $import_id ): array {
-		$originals  = 0;
-		$thumbnails = 0;
-		foreach ( $bitstreams as $bs ) {
-			$b = $bs['bundle'] ?? '';
-			if ( $b === 'ORIGINAL' ) {
-				++$originals;
-			} elseif ( $b === 'THUMBNAIL' ) {
-				++$thumbnails;
-			}
-		}
-		if ( $originals === 0 || $thumbnails === 0 ) {
-			return $bitstreams;
-		}
-
-		$this->log_if(
-			$import_id,
-			'INFO',
-			'bitstream.skip_thumbnails',
-			'[' . $oai_identifier . '] Dropping ' . $thumbnails . ' THUMBNAIL bitstream(s) — ' . $originals . ' ORIGINAL(s) already available; WordPress will generate its own thumbnail sizes'
-		);
-
-		return array_values( array_filter( $bitstreams, fn( $bs ) => ( $bs['bundle'] ?? '' ) !== 'THUMBNAIL' ) );
 	}
 
 	/**
@@ -1977,10 +1972,13 @@ class Importer {
 		if ( ! is_wp_error( $head ) ) {
 			$cl = (int) wp_remote_retrieve_header( $head, 'content-length' );
 			if ( $cl > 0 && $cl > $max_bytes ) {
+				// Include a remediation hint in the error: a periodical PDF can
+				// easily be 50–200 MB and the default cap is 20 MB. Without the
+				// hint admins have no way to know they should raise the setting.
 				return new \WP_Error(
 					'too_large',
 					sprintf(
-						'Bitstream is %s MB, exceeds %s MB limit.',
+						'Bitstream is %s MB, exceeds %s MB limit (raise import_max_size_mb in Tainacan → OAI-PMH settings to download).',
 						number_format( $cl / 1048576, 1 ),
 						number_format( $max_bytes / 1048576, 0 )
 					)
@@ -2013,7 +2011,7 @@ class Importer {
 			return new \WP_Error(
 				'too_large',
 				sprintf(
-					'Downloaded file is %s MB, exceeds %s MB limit.',
+					'Downloaded file is %s MB, exceeds %s MB limit (raise import_max_size_mb in Tainacan → OAI-PMH settings to download).',
 					number_format( $actual / 1048576, 1 ),
 					number_format( $max_bytes / 1048576, 0 )
 				)

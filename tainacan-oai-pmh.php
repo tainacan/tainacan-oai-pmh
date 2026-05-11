@@ -3,7 +3,7 @@
  * Plugin Name: Tainacan OAI-PMH Enhanced
  * Plugin URI: https://tainacan.org
  * Description: OAI-PMH provider and importer for Tainacan with caching, monitoring, and validation.
- * Version: 0.6.3
+ * Version: 0.6.4
  * Author: Tainacan Team
  * Author URI: https://tainacan.org
  * License: GPL v3 or later
@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'TAINACAN_OAI_PMH_VERSION', '0.6.3' );
+define( 'TAINACAN_OAI_PMH_VERSION', '0.6.4' );
 define( 'TAINACAN_OAI_PMH_FILE', __FILE__ );
 define( 'TAINACAN_OAI_PMH_DIR', plugin_dir_path( __FILE__ ) );
 define( 'TAINACAN_OAI_PMH_URL', plugin_dir_url( __FILE__ ) );

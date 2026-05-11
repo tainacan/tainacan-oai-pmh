@@ -4,7 +4,7 @@ Tags: oai-pmh, tainacan, dspace, harvester, dublin-core
 Requires at least: 6.0
 Tested up to: 6.9
 Requires PHP: 8.1
-Stable tag: 0.6.3
+Stable tag: 0.6.4
 License: GPLv3 or later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -41,6 +41,50 @@ Yes. The bitstream pipeline is built around DSpace conventions and is the primar
 Yes for metadata. Bitstream download falls back gracefully when the upstream is not DSpace.
 
 == Changelog ==
+
+= 0.6.4 =
+
+Hotfix release. Fixes a regression introduced in 0.6.3 where items
+whose ORIGINAL bitstream exceeded the size cap (typical full-issue
+periodical PDFs at 50–200 MB vs. the 20 MB default) ended up with
+empty Documento, Miniatura, and Anexos — even though smaller
+THUMBNAIL bundle files were available.
+
+Root cause: 0.6.3 dropped THUMBNAIL bundles preemptively whenever any
+ORIGINAL appeared in the bitstream list, before attempting any
+download. When the ORIGINAL download then failed (too_large, HTTP
+error, MIME refusal), the pipeline had nothing left to fall back to.
+
+Replaced with a two-pass policy in enrich_item_with_bitstreams():
+
+  Pass 1 — Download every ORIGINAL bitstream.
+  Pass 2 — IF AND ONLY IF no ORIGINAL attached successfully, download
+           the THUMBNAIL bitstreams as a visual fallback.
+
+This keeps the happy path identical (ORIGINAL works → THUMBNAILs are
+not even downloaded, Anexos stays clean) while ensuring that items
+whose ORIGINAL is unavailable for any reason still get a thumbnail
+in Documento + featured image. The user explicitly requested clean
+Anexos earlier in development — that's preserved when the ORIGINAL
+works. The fallback only kicks in when the ORIGINAL actually fails.
+
+Better diagnostics: too_large WP_Error now includes the actual file
+size in MB plus a remediation hint pointing at the
+`import_max_size_mb` setting. Previously admins saw "Bitstream is 87
+MB, exceeds 20 MB limit." with no clue what to do next. Now they see
+"… (raise import_max_size_mb in Tainacan → OAI-PMH settings to
+download)."
+
+Recovery for items already empty after 0.6.3: re-run the harvest with
+0.6.4. The bitstream-backfill branch in enrich_item_with_bitstreams()
+fires because there's no `_oai_bitstream_url` postmeta, and the
+two-pass policy now lands a thumbnail at minimum. For full PDFs to
+actually be downloaded, raise the `import_max_size_mb` setting
+(Tainacan → OAI-PMH) to fit your typical periodical issue size
+(200–500 MB covers most cases).
+
+Code cleanup: drop_redundant_thumbnails() removed (dead code with the
+new policy).
 
 = 0.6.3 =
 
