@@ -90,10 +90,10 @@ XML;
 		// xoai produces dotted paths ending in a language tag (none|en|pt_BR…).
 		// Parser must strip that tail so the mapping table sees stable keys.
 		$xml = <<<'XML'
-<record xmlns="http://www.openarchives.org/OAI/2.0/">
+<record xmlns="http://www.openarchives.org/OAI/2.0/" xmlns:doc="http://www.lyncode.com/xoai">
   <header><identifier>oai:dspace:1</identifier><datestamp>2024-01-01T00:00:00Z</datestamp></header>
   <metadata>
-    <doc:metadata xmlns:doc="http://www.lyncode.com/xoai">
+    <doc:metadata>
       <doc:element name="dc">
         <doc:element name="title">
           <doc:element name="none">
@@ -131,10 +131,10 @@ XML;
 		// alongside the value field; parser must drop them so the mapping UI only
 		// shows actual metadata values.
 		$xml = <<<'XML'
-<record xmlns="http://www.openarchives.org/OAI/2.0/">
+<record xmlns="http://www.openarchives.org/OAI/2.0/" xmlns:doc="http://www.lyncode.com/xoai">
   <header><identifier>oai:dspace:1</identifier><datestamp>2024-01-01T00:00:00Z</datestamp></header>
   <metadata>
-    <doc:metadata xmlns:doc="http://www.lyncode.com/xoai">
+    <doc:metadata>
       <doc:element name="dc">
         <doc:element name="subject">
           <doc:element name="none">
