@@ -34,6 +34,68 @@ class Metadata_Mapper {
 	}
 
 	/**
+	 * Derives a human-readable label from a qualified source field name.
+	 *
+	 * Used so the importer wizard shows admins WHAT a field means, not just
+	 * the dotted technical key. Qualified DSpace schemas (xoai) and custom
+	 * Portuguese schemas (e.g. DAMI's `colaborador.autor`, `dimensoes.altura`)
+	 * become breadcrumb-style labels like "Colaborador › Autor".
+	 *
+	 * Algorithm:
+	 *  1. Standard DCMES 1.1 elements (`title`, `creator`, …) → the existing
+	 *     translated label from get_standard_dc_fields().
+	 *  2. Strip well-known namespace prefixes (`dc.`, `dcterms.`, `dcmitype.`)
+	 *     since they add no information for the admin.
+	 *  3. Split on `.`, replace underscores with spaces, titlecase each
+	 *     segment (UTF-8 aware so "dimensoes" → "Dimensoes" and "Pequena
+	 *     ilustração" stays correct).
+	 *  4. Join segments with " › " so the qualifier hierarchy is visible
+	 *     without committing to a particular grammatical order.
+	 *
+	 * @param string $field_name Source field key, e.g. `dc.contributor.author`.
+	 * @return string Human-readable label, e.g. `Contributor › Author`.
+	 */
+	public static function derive_field_label( string $field_name ): string {
+		$field_name = trim( $field_name );
+		if ( '' === $field_name ) {
+			return '';
+		}
+
+		$standard = self::get_standard_dc_fields();
+		if ( isset( $standard[ $field_name ] ) ) {
+			return $standard[ $field_name ];
+		}
+
+		$name = $field_name;
+		foreach ( array( 'dc.', 'dcterms.', 'dcmitype.' ) as $prefix ) {
+			if ( str_starts_with( $name, $prefix ) ) {
+				$name = substr( $name, strlen( $prefix ) );
+				break;
+			}
+		}
+
+		// After stripping `dc.`, the remaining tail can be a standard DC
+		// element (e.g. `dc.title` → `title`). Use the translated label in
+		// that case so xoai-prefixed standard fields show as "Title", not
+		// "Title" with mismatched casing.
+		if ( isset( $standard[ $name ] ) ) {
+			return $standard[ $name ];
+		}
+
+		$parts = array_map(
+			static function ( $segment ) {
+				$segment = str_replace( '_', ' ', $segment );
+				return function_exists( 'mb_convert_case' )
+					? mb_convert_case( $segment, MB_CASE_TITLE, 'UTF-8' )
+					: ucwords( $segment );
+			},
+			explode( '.', $name )
+		);
+
+		return implode( ' › ', $parts );
+	}
+
+	/**
 	 * Returns Tainacan metadata of the given collection, including:
 	 *  - own metadata
 	 *  - inherited (parent/repository-level)
@@ -123,14 +185,18 @@ class Metadata_Mapper {
 			);
 		}
 
-		// 2) Extra fields found in source but outside DC 1.1 (qdc dcterms, mods, dim…)
+		// 2) Extra fields found in source but outside DC 1.1 (qdc dcterms,
+		// xoai-qualified `dc.contributor.author`, custom schemas with
+		// non-Dublin namespaces like DAMI's `colaborador.autor` /
+		// `dimensoes.altura`). derive_field_label() makes these
+		// breadcrumb-readable in the wizard instead of raw dotted keys.
 		foreach ( $source_fields as $f ) {
 			if ( isset( $standard[ $f['name'] ] ) ) {
 				continue;
 			}
 			$rows[] = array(
 				'name'                   => $f['name'],
-				'label'                  => $f['label'] ?? ucfirst( $f['name'] ),
+				'label'                  => self::derive_field_label( $f['name'] ),
 				'is_standard_dc'         => false,
 				'present_in_source'      => true,
 				'sample'                 => $f['sample'] ?? '',

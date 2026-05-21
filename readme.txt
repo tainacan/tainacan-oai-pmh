@@ -4,7 +4,7 @@ Tags: oai-pmh, tainacan, dspace, harvester, dublin-core
 Requires at least: 6.0
 Tested up to: 6.9
 Requires PHP: 8.1
-Stable tag: 0.6.5
+Stable tag: 0.6.6
 License: GPLv3 or later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -41,6 +41,47 @@ Yes. The bitstream pipeline is built around DSpace conventions and is the primar
 Yes for metadata. Bitstream download falls back gracefully when the upstream is not DSpace.
 
 == Changelog ==
+
+= 0.6.6 =
+
+Importer mapping wizard now shows human-readable labels for every source
+field, not just the dotted technical key.
+
+Background: when an upstream OAI-PMH endpoint exposes a qualified or
+custom schema beyond the 15 DCMES 1.1 elements — qualified xoai
+(`dc.contributor.author`, `dc.description.abstract`), qdc dcterms
+(`dcterms.isPartOf`), or a fully custom Portuguese schema like DAMI
+Museu Imperial (`colaborador.autor`, `dimensoes.altura`,
+`data.incorporacao`) — admins were seeing the raw dotted key in column 1
+of the mapping table. That made target-metadatum selection slow and
+error-prone for repositories with dozens of custom fields.
+
+Adds `Metadata_Mapper::derive_field_label()`:
+  * For the 15 DCMES elements: returns the existing translated label
+    (`title` → "Title" / "Título" in pt_BR).
+  * For `dc.<element>` and `dcterms.<element>`: strips the namespace
+    prefix and, if the tail is itself a standard DC element, returns
+    the translated label (so `dc.title` and `title` produce the same
+    "Title" label).
+  * For everything else: titlecases each dotted segment (UTF-8 aware,
+    so Portuguese names survive) and joins with " › ". `colaborador.autor`
+    → "Colaborador › Autor". `dc.contributor.author` → "Contributor ›
+    Author".
+
+`build_mapping_rows()` calls the helper for non-standard rows so the
+label travels into the AJAX response. The wizard JS
+(`renderMappingTable` and the scheduled-harvest mapping renderer) now
+shows the label prominently with the technical key as muted subtext
+underneath via a new `.oai-field-key` CSS rule.
+
+Unit tests added covering: standard DCMES branch, `dc.`/`dcterms.`
+prefix stripping with fall-through to standard, qualified xoai
+breadcrumbs, custom Portuguese schemas (DAMI), underscore-to-space
+conversion, empty input safety, and the single-segment titlecase path.
+
+No runtime behavior change for actually importing records — the mapping
+key sent on import is still the technical name. Only the wizard's
+presentation changes.
 
 = 0.6.5 =
 

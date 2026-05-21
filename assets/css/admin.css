@@ -351,6 +351,18 @@
     color: #495057;
 }
 
+/* Mapping table: technical key shown under the label in muted style so the
+   admin sees "Colaborador › Autor" prominently with "colaborador.autor" as
+   a low-noise reference below. */
+.oai-field-key {
+    display: inline-block;
+    margin-top: 2px;
+    font-size: 11px;
+    color: #6c757d;
+    background: transparent;
+    padding: 0;
+}
+
 /* Empty State */
 .oai-empty {
     text-align: center;

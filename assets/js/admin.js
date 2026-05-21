@@ -400,9 +400,16 @@
                 const $tr = $('<tr>');
                 if (!row.present_in_source) $tr.addClass('oai-row-empty');
 
-                // Column 1: source field name (DC: prefix only for standard ones)
-                const fieldLabel = row.is_standard_dc ? 'dc:' + row.name : row.name;
-                const $name = $('<td>').append($('<strong>', { text: fieldLabel }));
+                // Column 1: human label up top, technical key as muted subtext.
+                // For DAMI-style qualified schemas (colaborador.autor,
+                // dimensoes.altura) the label is the breadcrumb derived
+                // server-side by Metadata_Mapper::derive_field_label().
+                const technicalKey = row.is_standard_dc ? 'dc:' + row.name : row.name;
+                const labelText = row.label || technicalKey;
+                const $name = $('<td>');
+                $name.append($('<strong>', { text: labelText }));
+                $name.append('<br>');
+                $name.append($('<code>', { 'class': 'oai-field-key', text: technicalKey }));
                 if (row.is_multi) $name.append(' ').append($('<span>', { 'class': 'oai-badge oai-badge-multi', text: '× ' + row.occurrences }));
                 if (!row.present_in_source) $name.append(' ').append($('<small>', { text: '(not in sample)' }));
                 $tr.append($name);
@@ -891,7 +898,15 @@
 
                 rows.forEach(function (row) {
                     const $tr = $('<tr>');
-                    $tr.append($('<td>').append($('<strong>', { text: 'dc:' + row.name })));
+                    // Scheduled-harvest mapping table mirrors the wizard format:
+                    // label first, technical key underneath as muted subtext.
+                    const technicalKey = row.is_standard_dc ? 'dc:' + row.name : row.name;
+                    const labelText = row.label || technicalKey;
+                    const $cell = $('<td>');
+                    $cell.append($('<strong>', { text: labelText }));
+                    $cell.append('<br>');
+                    $cell.append($('<code>', { 'class': 'oai-field-key', text: technicalKey }));
+                    $tr.append($cell);
 
                     const $select = $('<select>', { 'class': 'harvest-mapping-select', name: 'mapping[' + row.name + ']' });
                     $select.append($('<option>', { value: '', text: '— Skip —' }));
