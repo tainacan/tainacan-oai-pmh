@@ -41,7 +41,6 @@ class Plugin extends \Tainacan\Pages {
 	private $logger;
 	private $importer;
 	private $rate_limiter;
-	private $token_manager;
 	private $harvester;
 
 	/**
@@ -57,28 +56,26 @@ class Plugin extends \Tainacan\Pages {
 	public function init() {
 		parent::init();
 
-		$this->cache         = new Cache();
-		$this->logger        = new Logger();
-		$this->importer      = new Importer();
-		$this->rate_limiter  = new Rate_Limiter();
-		$this->token_manager = new Token_Manager();
-		$this->harvester     = new Harvester();
+		$this->cache        = new Cache();
+		$this->logger       = new Logger();
+		$this->importer     = new Importer();
+		$this->rate_limiter = new Rate_Limiter();
+		$this->harvester    = new Harvester();
 
 		// Custom cron schedule + per-source cron action
 		Harvester::register_hooks();
+
+		// Enhance the core Tainacan OAI-PMH endpoint (response cache, rate
+		// limiting and request logging) instead of registering a second provider.
+		( new Enhancer( $this->rate_limiter, $this->logger ) )->register();
 
 		$this->init_hooks();
 	}
 
 	private function init_hooks() {
-		// REST API
-		add_action(
-			'rest_api_init',
-			function () {
-				$controller = new REST_Controller();
-				$controller->register_routes();
-			}
-		);
+		// The OAI-PMH endpoint is provided by Tainacan core (tainacan/v2/oai).
+		// This plugin no longer registers a competing route; it layers caching,
+		// rate limiting and logging onto the core endpoint via the Enhancer.
 
 		// Auto-indexing
 		add_action( 'tainacan-insert', array( $this, 'on_item_save' ), 10, 2 );
@@ -281,7 +278,6 @@ class Plugin extends \Tainacan\Pages {
 	public function daily_maintenance() {
 		$this->logger->cleanup( 30 );
 		$this->logger->resolve_pending_hostnames( 200 );
-		$this->token_manager->cleanup();
 		$this->rate_limiter->cleanup( 7 );
 	}
 

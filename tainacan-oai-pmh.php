@@ -51,9 +51,6 @@ add_action(
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-settings.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-cache.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-logger.php';
-		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-data-provider.php';
-		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-xml-generator.php';
-		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-rest-controller.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-validator.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-record-parser.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-oai-client.php';
@@ -62,7 +59,7 @@ add_action(
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-importer.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-metadata-mapper.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-rate-limiter.php';
-		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-token-manager.php';
+		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-enhancer.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-harvester.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-plugin.php';
 
