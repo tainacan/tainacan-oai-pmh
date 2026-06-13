@@ -45,11 +45,36 @@ class Enhancer {
 		add_filter( 'tainacan-oai-pre-dispatch', array( $this, 'serve_cache' ), 10, 3 );
 		add_action( 'tainacan-oai-response', array( $this, 'store_cache' ), 10, 4 );
 
+		// Make the plugin settings drive the core endpoint behaviour.
+		add_filter( 'tainacan-oai-maxrecords', array( $this, 'max_records' ) );
+		add_filter( 'tainacan-oai-token-valid', array( $this, 'token_ttl' ) );
+
 		// Invalidate cached responses whenever the catalog changes.
 		add_action( 'tainacan-insert', array( $this, 'flush' ) );
 		add_action( 'tainacan-update', array( $this, 'flush' ) );
 		add_action( 'trashed_post', array( $this, 'flush' ) );
 		add_action( 'untrashed_post', array( $this, 'flush' ) );
+	}
+
+	/**
+	 * Page size for ListRecords/ListIdentifiers, from the plugin settings.
+	 *
+	 * @param int $core_default Core default page size.
+	 * @return int
+	 */
+	public function max_records( $core_default ) {
+		return max( 1, (int) Settings::get( 'max_records', $core_default ) );
+	}
+
+	/**
+	 * resumptionToken lifetime (seconds), from the plugin settings (stored in hours).
+	 *
+	 * @param int $core_default Core default lifetime, in seconds.
+	 * @return int
+	 */
+	public function token_ttl( $core_default ) {
+		$hours = (int) Settings::get( 'token_expiry', 0 );
+		return $hours > 0 ? $hours * HOUR_IN_SECONDS : $core_default;
 	}
 
 	/**

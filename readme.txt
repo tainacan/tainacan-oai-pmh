@@ -4,7 +4,7 @@ Tags: oai-pmh, tainacan, dspace, harvester, dublin-core
 Requires at least: 6.0
 Tested up to: 6.9
 Requires PHP: 8.1
-Stable tag: 0.6.6
+Stable tag: 0.7.0
 License: GPLv3 or later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -41,6 +41,22 @@ Yes. The bitstream pipeline is built around DSpace conventions and is the primar
 Yes for metadata. Bitstream download falls back gracefully when the upstream is not DSpace.
 
 == Changelog ==
+
+= 0.7.0 =
+
+Architecture change. The plugin no longer ships its own OAI-PMH provider; the
+provider was upstreamed into Tainacan core (issue #1029), which serves a
+corrected, REST-native endpoint at `tainacan/v2/oai`. This plugin now acts as
+an importer/harvester plus an enhancer of the core endpoint:
+
+* Removed the duplicate provider (data provider, XML generator, REST controller,
+  token manager) and its `tainacan-oai/v1/oai` route and tokens table.
+* Added an Enhancer that layers response caching, per-IP rate limiting and
+  request logging onto the core endpoint via its extension hooks
+  (`tainacan-oai-permission`, `tainacan-oai-pre-dispatch`, `tainacan-oai-response`).
+* The "max records" and "token expiry" settings now drive the core endpoint
+  through the `tainacan-oai-maxrecords` and `tainacan-oai-token-valid` filters.
+* Importer, scheduled harvester and DSpace bitstream pipeline are unchanged.
 
 = 0.6.6 =
 

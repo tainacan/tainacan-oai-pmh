@@ -126,17 +126,6 @@ class Activator {
 				KEY collection_id (collection_id)
 			) $charset",
 
-			"{$prefix}tainacan_oai_tokens"      => "CREATE TABLE {$prefix}tainacan_oai_tokens (
-				id BIGINT UNSIGNED AUTO_INCREMENT,
-				token VARCHAR(64) NOT NULL,
-				data LONGTEXT NOT NULL,
-				created_at DATETIME NOT NULL,
-				expires_at DATETIME NOT NULL,
-				PRIMARY KEY  (id),
-				UNIQUE KEY token (token),
-				KEY expires_at (expires_at)
-			) $charset",
-
 			"{$prefix}tainacan_oai_sources"     => "CREATE TABLE {$prefix}tainacan_oai_sources (
 				id BIGINT UNSIGNED AUTO_INCREMENT,
 				label VARCHAR(255) NOT NULL,

@@ -95,7 +95,7 @@ class Settings {
 				'section'    => 'tainacan_oai_pmh_settings',
 				'type'       => 'boolean',
 				'input_type' => 'checkbox',
-				'label'      => __( 'Use MySQL cache for faster responses', 'tainacan-oai-pmh' ),
+				'label'      => __( 'Cache OAI-PMH responses for faster harvesting', 'tainacan-oai-pmh' ),
 				'default'    => true,
 			)
 		);
