@@ -1,0 +1,2994 @@
+diff --git a/src/classes/api/endpoints/class-tainacan-rest-oaipmh-expose-controller.php b/src/classes/api/endpoints/class-tainacan-rest-oaipmh-expose-controller.php
+index 61f3eeacd..be9d1cbb1 100644
+--- a/src/classes/api/endpoints/class-tainacan-rest-oaipmh-expose-controller.php
++++ b/src/classes/api/endpoints/class-tainacan-rest-oaipmh-expose-controller.php
+@@ -4,171 +4,392 @@ namespace Tainacan\API\EndPoints;
+ 
+ defined( 'ABSPATH' ) or die( 'No script kiddies please!' );
+ 
+-use Tainacan\OAIPMHExpose;
+-use \Tainacan\API\REST_Controller;
++use Tainacan\API\REST_Controller;
++use Tainacan\OAIPMHExpose\OAIPMH_Data_Provider;
++use Tainacan\OAIPMHExpose\OAIPMH_Xml_Generator;
++use Tainacan\OAIPMHExpose\OAIPMH_Token_Manager;
+ 
+ /**
+- * REST API controller for managing Tainacan OAI-PMH exposure.
++ * REST controller exposing the repository as an OAI-PMH 2.0 data provider.
+  *
+- * Handles all REST API endpoints for OAI-PMH protocol operations including
+- * metadata harvesting, repository configuration, and OAI-PMH compliance.
++ * Implements the six OAI-PMH verbs at /wp-json/tainacan/v2/oai. The response is
++ * raw OAI-PMH XML, served through rest_pre_serve_request so harvesters receive
++ * a valid document instead of a JSON envelope.
+  *
+  * @since 1.0.0
+  */
+ class REST_Oaipmh_Expose_Controller extends REST_Controller {
+ 
+-    /**
+-     * REST_Oaipmh_Expose_Controller constructor.
+-     */
+-    public function __construct() {
+-        $this->rest_base = 'oai';
+-        parent::__construct();
+-        add_action('init', array(&$this, 'init_objects'), 11);
+-    }
+-
+-    /**
+-     * Initialize objects after post_type register
+-     */
+-    public function init_objects() {
+-        $this->controller_oai = new \Tainacan\OAIPMHExpose\OAIPMH_Expose();
+-        $this->list_sets = new \Tainacan\OAIPMHExpose\OAIPMH_List_Sets();
+-        $this->list_metadata_formats = new \Tainacan\OAIPMHExpose\OAIPMH_List_Metadata_Formats();
+-        $this->list_records = new \Tainacan\OAIPMHExpose\OAIPMH_List_Records();
+-        $this->get_record = new \Tainacan\OAIPMHExpose\OAIPMH_Get_Record();
+-        $this->identify = new \Tainacan\OAIPMHExpose\OAIPMH_Identify();
+-        $this->identifiers = new \Tainacan\OAIPMHExpose\OAIPMH_List_Identifiers();
+-    }
+-
+-    public function register_routes() {
+-        register_rest_route($this->namespace, '/' . $this->rest_base, array(
+-            array(
+-                'methods'             => \WP_REST_Server::READABLE,
+-                'callback'            => array($this, 'get_verb'),
+-                'permission_callback' => array($this, 'get_verb_permissions_check'),
+-                'args'              => $this->get_verb_params() 
+-            ),
+-            'schema' => [$this, 'get_schema']
+-        ));
+-    }
+-
+-    /**
+-     * @param \WP_REST_Request $request
+-     *
+-     * @return bool|\WP_Error
+-     */
+-    public function get_verb_permissions_check( $request ) {
+-        return true;
+-    }
+-
+-    /**
+-     * @param \WP_REST_Request $request
+-     *
+-     * @return \WP_Error|\WP_REST_Response
+-     * @throws \Exception
+-     */
+-    public function get_verb( $request ){
+-        $request['verb'] = ( isset($request['verb']) ) ? $request['verb'] : 'Identify';
+-        
+-        switch ($request['verb']){
+-
+-            case 'ListSets':
+-                $allowed_arguments = array('verb','resumptionToken');
+-                foreach ($request as $key => $value) {
+-                    if(!in_array($key, $allowed_arguments)){
+-                        $this->list_sets->config();
+-                        $this->list_sets->errors[] =  $this->list_sets->oai_error('badArgument');
+-                        $this->list_sets->oai_exit($request, $this->list_sets->errors);
+-                    }
+-                }
+-                $this->list_sets->list_sets($request);
+-                break;
+-
+-            case 'ListRecords':
+-                if ( !isset($request['metadataPrefix']) && !isset($request['resumptionToken']) ) {
+-                    $this->list_records->config();
+-                    $this->list_records->errors[] =  $this->list_records->oai_error('missingArgument','metadataPrefix');
+-                    $this->list_records->oai_exit($request, $this->list_records->errors);
+-                }
+-                $this->list_records->list_records($request);
+-                break;
+-
+-            case 'ListIdentifiers':
+-                if ( !isset($request['metadataPrefix']) && !isset($request['resumptionToken']) ) {
+-                    $this->identifiers->config();
+-                    $this->identifiers->errors[] =  $this->list_records->oai_error('missingArgument','metadataPrefix');
+-                    $this->identifiers->oai_exit($request, $this->list_records->errors);
+-                }
+-                $this->identifiers->list_identifiers($request);
+-                break;
+-
+-            case 'GetRecord':
+-
+-                if ( !isset($request['metadataPrefix']) ) {
+-                    $this->get_record->config();
+-                    $this->get_record->errors[] = $this->get_record->oai_error('missingArgument','metadataPrefix');
+-                    $this->get_record->oai_exit( $request, $this->get_record->errors );
+-                }
+-
+-                if( !isset($request['identifier']) ){
+-                    $this->get_record->config();
+-                    $this->get_record->errors[] = $this->get_record->oai_error('missingArgument','identifier');
+-                    $this->get_record->oai_exit( $request, $this->get_record->errors );
+-                }
+-
+-                $this->get_record->get_record( $request );
+-
+-                break;
+-
+-            case 'ListMetadataFormats':
+-                $this->list_metadata_formats->list_metadata_formats($request);
+-                break;
+-
+-            case 'Identify':
+-                $this->identify->identify($request);
+-                break;
+-
+-            default:
+-                $this->controller_oai->config();
+-                $this->controller_oai->errors[] = $this->controller_oai->oai_error('noVerb');
+-                $this->controller_oai->oai_exit( $request, $this->controller_oai->errors);
+-                break;
+-        }
+-
+-        die;
+-    }
+-
+-    function get_verb_params() {
+-        return [
+-            'verb' => [
+-                'enum' => ['ListSets', 'ListRecords', 'ListIdentifiers', 'GetRecord', 'ListMetadataFormats', 'Identify'],
+-                'required' => true,
+-                'description' => __( 'The OAI-PMH verb to execute.', 'tainacan' ),
+-                'type=' => 'string'
+-            ],
+-            'resumptionToken' => [
+-                'description' => __( 'The resumptionToken to continue a previous request.', 'tainacan' ),
+-                'type' => 'string'
+-            ],
+-            'metadataPrefix' => [
+-                'description' => __( 'The metadataPrefix to use in the request. Used when the verb is "ListRecords", "ListIdentifiers" and "GetRecord"', 'tainacan' ),
+-                'type' => 'string'
+-            ],
+-            'identifier' => [
+-                'description' => __( 'The identifier to use in the request. Used when the verb is "GetRecord".', 'tainacan' ),
+-                'type' => 'string'
+-            ],
+-        ];
+-    }
+-
+-    function get_schema() {
+-		$schema = [
+-			'$schema'  => 'http://json-schema.org/draft-04/schema#',
+-			'title' => $this->rest_base,
+-			'type' => 'string',
+-			'tags' => [ $this->rest_base ],
+-            'description' => __( 'Result of the OAI-PMH Exposer for the provided verb.', 'tainacan'),
+-		];
+-
+-		return $schema;
++	/**
++	 * @var OAIPMH_Data_Provider
++	 */
++	private $data_provider;
++
++	/**
++	 * @var OAIPMH_Token_Manager
++	 */
++	private $token_manager;
++
++	public function __construct() {
++		$this->rest_base = 'oai';
++		parent::__construct();
++	}
++
++	/**
++	 * Lazily build the provider collaborators (after post types are registered).
++	 */
++	private function boot() {
++		if ( null === $this->data_provider ) {
++			$this->data_provider = new OAIPMH_Data_Provider();
++			$this->token_manager = new OAIPMH_Token_Manager();
++		}
++	}
++
++	public function register_routes() {
++		register_rest_route(
++			$this->namespace,
++			'/' . $this->rest_base,
++			array(
++				array(
++					'methods'             => \WP_REST_Server::READABLE,
++					'callback'            => array( $this, 'get_verb' ),
++					'permission_callback' => array( $this, 'get_verb_permissions_check' ),
++					'args'                => $this->get_verb_params(),
++				),
++				'schema' => array( $this, 'get_schema' ),
++			)
++		);
++	}
++
++	/**
++	 * @param \WP_REST_Request $request
++	 * @return bool|\WP_Error
++	 */
++	public function get_verb_permissions_check( $request ) {
++		// OAI-PMH is, by protocol design, an unauthenticated public harvesting
++		// interface: every exposed record is already public ('publish'). Access is
++		// therefore intentionally open. Use the filter below to restrict it.
++		return apply_filters( 'tainacan-oai-permission', true, $request );
++	}
++
++	/**
++	 * Dispatch the requested OAI-PMH verb and return the XML response.
++	 *
++	 * @param \WP_REST_Request $request
++	 * @return \WP_REST_Response
++	 */
++	public function get_verb( $request ) {
++		$this->boot();
++
++		$params   = $request->get_params();
++		$verb     = isset( $params['verb'] ) ? $params['verb'] : '';
++		$base_url = $this->data_provider->get_base_url();
++		$xml      = new OAIPMH_Xml_Generator();
++
++		$valid_verbs = array( 'Identify', 'ListMetadataFormats', 'ListSets', 'ListRecords', 'ListIdentifiers', 'GetRecord' );
++
++		if ( '' === $verb ) {
++			$xml->init( $base_url, '' )->add_error( 'badVerb', 'Missing verb argument.' );
++			return $this->serve( $xml->output(), $verb, $params );
++		}
++
++		if ( ! in_array( $verb, $valid_verbs, true ) ) {
++			$xml->init( $base_url, $verb )->add_error( 'badVerb', 'Illegal OAI verb.' );
++			return $this->serve( $xml->output(), $verb, $params );
++		}
++
++		/**
++		 * Allow a plugin to short-circuit the response, e.g. serve a cached
++		 * document or reject the request (rate limiting). Returning a non-empty
++		 * string is treated as the full XML response body.
++		 *
++		 * @param string|null $pre    Short-circuit XML, or null to dispatch normally.
++		 * @param string      $verb   The requested verb.
++		 * @param array       $params The request parameters.
++		 */
++		$pre = apply_filters( 'tainacan-oai-pre-dispatch', null, $verb, $params );
++		if ( is_string( $pre ) && '' !== $pre ) {
++			return $this->serve( $pre, $verb, $params, true );
++		}
++
++		$xml->init( $base_url, $verb, $params );
++
++		switch ( $verb ) {
++			case 'Identify':
++				$xml->create_identify( $this->data_provider->get_identify() );
++				break;
++			case 'ListMetadataFormats':
++				$this->handle_list_metadata_formats( $xml, $params );
++				break;
++			case 'ListSets':
++				$xml->create_sets( $this->data_provider->get_sets() );
++				break;
++			case 'ListRecords':
++				$this->handle_list_records( $xml, $params, true );
++				break;
++			case 'ListIdentifiers':
++				$this->handle_list_records( $xml, $params, false );
++				break;
++			case 'GetRecord':
++				$this->handle_get_record( $xml, $params );
++				break;
++		}
++
++		return $this->serve( $xml->output(), $verb, $params );
++	}
++
++	/**
++	 * @param OAIPMH_Xml_Generator $xml
++	 * @param array                $params
++	 */
++	private function handle_list_metadata_formats( $xml, $params ) {
++		if ( ! empty( $params['identifier'] ) && ! $this->data_provider->item_exists( $params['identifier'] ) ) {
++			$xml->add_error( 'idDoesNotExist', 'The identifier does not exist.' );
++			return;
++		}
++		$xml->create_metadata_formats();
++	}
++
++	/**
++	 * @param OAIPMH_Xml_Generator $xml
++	 * @param array                $params
++	 * @param bool                 $include_metadata
++	 */
++	private function handle_list_records( $xml, $params, $include_metadata ) {
++		$query = $this->parse_list_params( $xml, $params );
++		if ( false === $query ) {
++			return;
++		}
++
++		$max_records = (int) apply_filters( 'tainacan-oai-maxrecords', 100 );
++
++		$result = $this->data_provider->get_records(
++			array(
++				'per'   => $max_records,
++				'page'  => $query['page'],
++				'set'   => isset( $query['set'] ) ? $query['set'] : null,
++				'from'  => isset( $query['from'] ) ? $query['from'] : null,
++				'until' => isset( $query['until'] ) ? $query['until'] : null,
++			)
++		);
++
++		if ( empty( $result['items'] ) ) {
++			$xml->add_error( 'noRecordsMatch', 'No records match the request criteria.' );
++			return;
++		}
++
++		$total     = $result['total'];
++		$list_type = $include_metadata ? 'ListRecords' : 'ListIdentifiers';
++		$list      = $xml->start_list( $list_type );
++
++		foreach ( $result['items'] as $item ) {
++			if ( $include_metadata ) {
++				$xml->add_record( $list, $item, true );
++			} else {
++				$xml->add_header( $list, $item );
++			}
++		}
++
++		$delivered = $query['page'] * $max_records;
++		if ( $delivered < $total ) {
++			$next_query         = $query;
++			$next_query['page'] = $query['page'] + 1;
++
++			$token      = $this->token_manager->create( $next_query );
++			$ttl        = (int) apply_filters( 'tainacan-oai-token-valid', DAY_IN_SECONDS );
++			$expiration = gmdate( 'Y-m-d\TH:i:s\Z', time() + $ttl );
++			$cursor     = ( $query['page'] - 1 ) * $max_records;
++
++			$xml->add_resumption_token( $list, $token, $total, $cursor, $expiration );
++		} elseif ( ! empty( $params['resumptionToken'] ) ) {
++			$cursor = ( $query['page'] - 1 ) * $max_records;
++			$xml->add_resumption_token( $list, '', $total, $cursor );
++		}
++	}
++
++	/**
++	 * @param OAIPMH_Xml_Generator $xml
++	 * @param array                $params
++	 */
++	private function handle_get_record( $xml, $params ) {
++		if ( empty( $params['identifier'] ) ) {
++			$xml->add_error( 'badArgument', 'Missing identifier argument.' );
++			return;
++		}
++		if ( empty( $params['metadataPrefix'] ) ) {
++			$xml->add_error( 'badArgument', 'Missing metadataPrefix argument.' );
++			return;
++		}
++		if ( 'oai_dc' !== $params['metadataPrefix'] ) {
++			$xml->add_error( 'cannotDisseminateFormat', 'Metadata format not supported.' );
++			return;
++		}
++
++		$item = $this->data_provider->get_item( $params['identifier'] );
++		if ( ! $item ) {
++			$xml->add_error( 'idDoesNotExist', 'The identifier does not exist.' );
++			return;
++		}
++
++		$list = $xml->start_list( 'GetRecord' );
++		$xml->add_record( $list, $item, true );
++	}
++
++	/**
++	 * Resolve the pagination query from the request or a resumptionToken.
++	 *
++	 * @param OAIPMH_Xml_Generator $xml
++	 * @param array                $params
++	 * @return array|false
++	 */
++	private function parse_list_params( $xml, $params ) {
++		if ( ! empty( $params['resumptionToken'] ) ) {
++			$data = $this->token_manager->get( $params['resumptionToken'] );
++			if ( ! $data ) {
++				$xml->add_error( 'badResumptionToken', 'Invalid or expired token.' );
++				return false;
++			}
++			return $data;
++		}
++
++		if ( empty( $params['metadataPrefix'] ) ) {
++			$xml->add_error( 'badArgument', 'Missing metadataPrefix argument.' );
++			return false;
++		}
++		if ( 'oai_dc' !== $params['metadataPrefix'] ) {
++			$xml->add_error( 'cannotDisseminateFormat', 'Metadata format not supported.' );
++			return false;
++		}
++
++		$query = array(
++			'page'           => 1,
++			'metadataPrefix' => 'oai_dc',
++		);
++
++		// Treat null/'' as "no set filter"; everything else (including '0') must validate.
++		if ( isset( $params['set'] ) && '' !== $params['set'] ) {
++			if ( ! $this->data_provider->set_exists( $params['set'] ) ) {
++				$xml->add_error( 'badArgument', 'Invalid set specification.' );
++				return false;
++			}
++			$query['set'] = (int) $params['set'];
++		}
++
++		if ( ! empty( $params['from'] ) ) {
++			$from = $this->parse_date( $params['from'] );
++			if ( null === $from ) {
++				$xml->add_error( 'badArgument', 'Invalid from date.' );
++				return false;
++			}
++			$query['from'] = $from;
++		}
++		if ( ! empty( $params['until'] ) ) {
++			$until = $this->parse_date( $params['until'] );
++			if ( null === $until ) {
++				$xml->add_error( 'badArgument', 'Invalid until date.' );
++				return false;
++			}
++			$query['until'] = $until;
++		}
++
++		return $query;
++	}
++
++	/**
++	 * Normalize an OAI date argument (YYYY-MM-DD or full UTC) to SQL form.
++	 *
++	 * @param string $date
++	 * @return string|null
++	 */
++	private function parse_date( $date ) {
++		if ( preg_match( '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/', $date ) ) {
++			return gmdate( 'Y-m-d H:i:s', strtotime( $date ) );
++		}
++		if ( preg_match( '/^\d{4}-\d{2}-\d{2}$/', $date ) ) {
++			return $date . ' 00:00:00';
++		}
++		return null;
++	}
++
++	/**
++	 * Serve an XML string as the raw response body.
++	 *
++	 * @param string $xml_string The OAI-PMH XML document.
++	 * @param string $verb       The requested verb.
++	 * @param array  $params     The request parameters.
++	 * @param bool   $from_cache Whether the body came from a short-circuit (cache) filter.
++	 * @return \WP_REST_Response
++	 */
++	private function serve( $xml_string, $verb = '', $params = array(), $from_cache = false ) {
++		/**
++		 * Fires after the OAI-PMH XML response is built, before it is sent.
++		 * Lets a plugin cache the body or record observability data.
++		 *
++		 * @param string $xml_string The response body.
++		 * @param string $verb       The requested verb.
++		 * @param array  $params     The request parameters.
++		 * @param bool   $from_cache Whether the body was produced by a short-circuit filter.
++		 */
++		do_action( 'tainacan-oai-response', $xml_string, $verb, $params, $from_cache );
++
++		$response = new \WP_REST_Response();
++		$response->set_headers( array( 'Content-Type' => 'text/xml; charset=utf-8' ) );
++		$response->set_data( $xml_string );
++
++		add_filter(
++			'rest_pre_serve_request',
++			static function ( $served, $result ) {
++				// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Raw OAI-PMH XML produced by DOMDocument (OAIPMH_Xml_Generator), already escaped element by element; esc_*() would corrupt the XML and break harvesters.
++				echo $result->get_data();
++				return true;
++			},
++			10,
++			2
++		);
++
++		return $response;
++	}
++
++	public function get_verb_params() {
++		return array(
++			'verb'            => array(
++				'description' => __( 'The OAI-PMH verb to execute.', 'tainacan' ),
++				'type'        => 'string',
++			),
++			'resumptionToken' => array(
++				'description' => __( 'The resumptionToken to continue a previous request.', 'tainacan' ),
++				'type'        => 'string',
++			),
++			'metadataPrefix'  => array(
++				'description' => __( 'The metadataPrefix to use in the request. Used when the verb is "ListRecords", "ListIdentifiers" and "GetRecord".', 'tainacan' ),
++				'type'        => 'string',
++			),
++			'identifier'      => array(
++				'description' => __( 'The record identifier. Used when the verb is "GetRecord".', 'tainacan' ),
++				'type'        => 'string',
++			),
++			'set'             => array(
++				'description' => __( 'The set (collection ID) to filter by.', 'tainacan' ),
++				'type'        => 'string',
++			),
++			'from'            => array(
++				'description' => __( 'Lower datestamp bound for selective harvesting (UTC).', 'tainacan' ),
++				'type'        => 'string',
++			),
++			'until'           => array(
++				'description' => __( 'Upper datestamp bound for selective harvesting (UTC).', 'tainacan' ),
++				'type'        => 'string',
++			),
++		);
++	}
++
++	public function get_schema() {
++		return array(
++			'$schema'     => 'http://json-schema.org/draft-04/schema#',
++			'title'       => $this->rest_base,
++			'type'        => 'string',
++			'tags'        => array( $this->rest_base ),
++			'description' => __( 'Result of the OAI-PMH Exposer for the provided verb.', 'tainacan' ),
++		);
+ 	}
+-}
+\ No newline at end of file
++}
+diff --git a/src/classes/oaipmh/class-tainacan-oaipmh-data-provider.php b/src/classes/oaipmh/class-tainacan-oaipmh-data-provider.php
+new file mode 100644
+index 000000000..494a3071c
+--- /dev/null
++++ b/src/classes/oaipmh/class-tainacan-oaipmh-data-provider.php
+@@ -0,0 +1,364 @@
++<?php
++
++namespace Tainacan\OAIPMHExpose;
++
++defined( 'ABSPATH' ) or die( 'No script kiddies please!' );
++
++/**
++ * OAI-PMH data provider.
++ *
++ * Maps Tainacan entities (collections, items, item metadata) to the array
++ * structures consumed by {@see OAIPMH_Xml_Generator}. All data access is done
++ * through Tainacan repositories/entities, except the earliestDatestamp
++ * aggregate which is a justified direct query.
++ */
++class OAIPMH_Data_Provider {
++
++	/**
++	 * Transient caching the repository earliest datestamp.
++	 */
++	const EARLIEST_TRANSIENT = 'tnc_oai_earliest_datestamp';
++
++	/**
++	 * Identifier prefix, e.g. "oai:example.org:".
++	 *
++	 * @var string
++	 */
++	private $identifier_prefix;
++
++	public function __construct() {
++		$domain                  = wp_parse_url( home_url(), PHP_URL_HOST );
++		$this->identifier_prefix = 'oai:' . $domain . ':';
++	}
++
++	/**
++	 * Base URL advertised by the provider.
++	 *
++	 * @return string
++	 */
++	public function get_base_url() {
++		return rest_url( 'tainacan/v2/oai' );
++	}
++
++	/**
++	 * @return string
++	 */
++	public function get_identifier_prefix() {
++		return $this->identifier_prefix;
++	}
++
++	/**
++	 * @param int $item_id
++	 * @return string
++	 */
++	public function build_identifier( $item_id ) {
++		return $this->identifier_prefix . $item_id;
++	}
++
++	/**
++	 * @param string $identifier
++	 * @return int
++	 */
++	public function extract_item_id( $identifier ) {
++		return (int) str_replace( $this->identifier_prefix, '', $identifier );
++	}
++
++	/**
++	 * Build the Identify response.
++	 *
++	 * @return array
++	 */
++	public function get_identify() {
++		return array(
++			/**
++			 * Filter the repository name advertised on Identify.
++			 *
++			 * @param string $name Defaults to the site name.
++			 */
++			'repositoryName'    => apply_filters( 'tainacan-oai-repository-name', get_bloginfo( 'name' ) ),
++			'baseURL'           => $this->get_base_url(),
++			'protocolVersion'   => '2.0',
++			'adminEmail'        => apply_filters( 'tainacan-oai-admin-email', get_bloginfo( 'admin_email' ) ),
++			'earliestDatestamp' => $this->get_earliest_datestamp(),
++			'deletedRecord'     => 'transient',
++			'granularity'       => 'YYYY-MM-DDThh:mm:ssZ',
++		);
++	}
++
++	/**
++	 * Earliest item datestamp in the repository (UTC), cached for a day.
++	 *
++	 * @return string
++	 */
++	public function get_earliest_datestamp() {
++		$cached = get_transient( self::EARLIEST_TRANSIENT );
++		if ( is_string( $cached ) && '' !== $cached ) {
++			return $cached;
++		}
++
++		global $wpdb;
++		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- MIN() aggregate over $wpdb->posts restricted to Tainacan item post types; not expressible via WP_Query without loading every post; constant predicates, no user input; result cached in a transient below.
++		$earliest = $wpdb->get_var(
++			"SELECT MIN(post_date_gmt) FROM {$wpdb->posts}
++			 WHERE post_type LIKE 'tnc_col_%_item'
++			   AND post_status IN ('publish', 'private')
++			   AND post_date_gmt > '1970-01-01 00:00:00'"
++		);
++
++		if ( $earliest ) {
++			$result = gmdate( 'Y-m-d\TH:i:s\Z', strtotime( $earliest . ' UTC' ) );
++		} else {
++			// No items yet; per the OAI-PMH spec earliestDatestamp must still be set.
++			$result = gmdate( 'Y-m-d\TH:i:s\Z' );
++		}
++
++		/**
++		 * Filter the repository earliest datestamp advertised on Identify.
++		 *
++		 * @param string $result Datestamp in YYYY-MM-DDThh:mm:ssZ.
++		 */
++		$result = apply_filters( 'tainacan-oai-earliest-datestamp', $result );
++
++		set_transient( self::EARLIEST_TRANSIENT, $result, DAY_IN_SECONDS );
++
++		return $result;
++	}
++
++	/**
++	 * List collections as OAI sets.
++	 *
++	 * @return array
++	 */
++	public function get_sets() {
++		$repo        = \Tainacan\Repositories\Collections::get_instance();
++		$collections = $repo->fetch( array(), 'OBJECT' );
++
++		$sets = array();
++		if ( is_array( $collections ) ) {
++			foreach ( $collections as $col ) {
++				$sets[] = array(
++					'setSpec'        => (string) $col->get_id(),
++					'setName'        => $col->get_name(),
++					'setDescription' => $col->get_description(),
++				);
++			}
++		}
++		return $sets;
++	}
++
++	/**
++	 * Whether a setSpec maps to an existing collection.
++	 *
++	 * Sets are Tainacan collections, identified by numeric IDs. Non-numeric
++	 * specs are rejected on purpose (yields badArgument upstream).
++	 *
++	 * @param string $set_spec
++	 * @return bool
++	 */
++	public function set_exists( $set_spec ) {
++		if ( ! ctype_digit( (string) $set_spec ) ) {
++			return false;
++		}
++		try {
++			$collection = new \Tainacan\Entities\Collection( (int) $set_spec );
++		} catch ( \Exception $e ) {
++			return false;
++		}
++		return $collection->get_id() > 0;
++	}
++
++	/**
++	 * @param string $identifier
++	 * @return bool
++	 */
++	public function item_exists( $identifier ) {
++		$item_id = $this->extract_item_id( $identifier );
++		try {
++			$item = new \Tainacan\Entities\Item( $item_id );
++		} catch ( \Exception $e ) {
++			return false;
++		}
++		return $item->get_id() > 0;
++	}
++
++	/**
++	 * Fetch a single formatted record by OAI identifier.
++	 *
++	 * @param string $identifier
++	 * @return array|null
++	 */
++	public function get_item( $identifier ) {
++		$item_id = $this->extract_item_id( $identifier );
++		try {
++			$item = new \Tainacan\Entities\Item( $item_id );
++		} catch ( \Exception $e ) {
++			return null;
++		}
++		if ( ! $item->get_id() ) {
++			return null;
++		}
++		return $this->format_item( $item->get_id() );
++	}
++
++	/**
++	 * Fetch a page of records, with the matching total in a single query.
++	 *
++	 * @param array $query {
++	 *     @type int    $page  1-based page number.
++	 *     @type int    $per   Page size.
++	 *     @type int    $set   Optional collection ID filter.
++	 *     @type string $from  Optional lower datestamp bound (UTC).
++	 *     @type string $until Optional upper datestamp bound (UTC).
++	 * }
++	 * @return array { @type array $items; @type int $total }
++	 */
++	public function get_records( $query ) {
++		$args = array(
++			'posts_per_page' => (int) $query['per'],
++			'paged'          => max( 1, (int) $query['page'] ),
++			'order'          => 'DESC',
++			'orderby'        => 'ID',
++			'post_status'    => array( 'publish', 'trash' ),
++		);
++
++		$date_query = $this->build_date_query(
++			isset( $query['from'] ) ? $query['from'] : null,
++			isset( $query['until'] ) ? $query['until'] : null
++		);
++		if ( ! empty( $date_query ) ) {
++			$args['date_query'] = $date_query;
++		}
++
++		$collections = array();
++		if ( ! empty( $query['set'] ) ) {
++			$collections = array( (int) $query['set'] );
++		}
++
++		$items_repo = \Tainacan\Repositories\Items::get_instance();
++		$wp_query   = $items_repo->fetch( $args, $collections, 'WP_Query' );
++
++		$items = array();
++		foreach ( $wp_query->posts as $post ) {
++			$formatted = $this->format_item( $post );
++			if ( null !== $formatted ) {
++				$items[] = $formatted;
++			}
++		}
++
++		return array(
++			'items' => $items,
++			'total' => (int) $wp_query->found_posts,
++		);
++	}
++
++	/**
++	 * Build a WP_Query date_query on post_date_gmt from OAI from/until.
++	 *
++	 * @param string|null $from
++	 * @param string|null $until
++	 * @return array
++	 */
++	private function build_date_query( $from, $until ) {
++		$date_query = array();
++		if ( ! empty( $from ) ) {
++			$date_query[] = array(
++				'column'    => 'post_date_gmt',
++				'after'     => $from,
++				'inclusive' => true,
++			);
++		}
++		if ( ! empty( $until ) ) {
++			$date_query[] = array(
++				'column'    => 'post_date_gmt',
++				'before'    => $until,
++				'inclusive' => true,
++			);
++		}
++		return $date_query;
++	}
++
++	/**
++	 * Map an item (post or ID) to the OAI record array.
++	 *
++	 * @param \WP_Post|int $post
++	 * @return array|null
++	 */
++	private function format_item( $post ) {
++		try {
++			$item = new \Tainacan\Entities\Item( $post );
++		} catch ( \Exception $e ) {
++			return null;
++		}
++
++		if ( ! $item->get_id() ) {
++			return null;
++		}
++
++		$collection = $item->get_collection();
++		$gmt_date   = ( $post instanceof \WP_Post && ! empty( $post->post_modified_gmt ) )
++			? $post->post_modified_gmt
++			: $item->get_modification_date();
++
++		return array(
++			'identifier' => $this->build_identifier( $item->get_id() ),
++			'datestamp'  => gmdate( 'Y-m-d\TH:i:s\Z', strtotime( $gmt_date . ' UTC' ) ),
++			'setSpec'    => $collection ? (string) $collection->get_id() : null,
++			'status'     => $item->get_status(),
++			'metadata'   => 'trash' === $item->get_status() ? array() : $this->get_item_dc( $item ),
++		);
++	}
++
++	/**
++	 * Build the Dublin Core field map for an item.
++	 *
++	 * @param \Tainacan\Entities\Item $item
++	 * @return array
++	 */
++	private function get_item_dc( $item ) {
++		// Values are accumulated as arrays so Dublin Core fields can repeat, then
++		// de-duplicated: a core property (e.g. the title) and a metadatum mapped
++		// to the same DC element commonly carry the identical value.
++		$dc = array(
++			'title'      => array( $item->get_title() ),
++			'identifier' => array( get_permalink( $item->get_id() ) ),
++			'date'       => array( gmdate( 'Y-m-d', strtotime( $item->get_creation_date() ) ) ),
++		);
++
++		if ( $item->get_description() ) {
++			$dc['description'] = array( $item->get_description() );
++		}
++
++		$metadata = $item->get_metadata();
++		if ( is_array( $metadata ) ) {
++			foreach ( $metadata as $item_meta ) {
++				$metadatum = $item_meta->get_metadatum();
++				if ( ! $metadatum ) {
++					continue;
++				}
++
++				$mapping = $metadatum->get_exposer_mapping();
++				if ( empty( $mapping['dublin-core'] ) ) {
++					continue;
++				}
++
++				$field = str_replace( 'dc:', '', $mapping['dublin-core'] );
++				$value = $item_meta->get_value_as_string();
++
++				if ( '' === $value || null === $value ) {
++					continue;
++				}
++
++				if ( ! isset( $dc[ $field ] ) ) {
++					$dc[ $field ] = array();
++				}
++				$dc[ $field ][] = $value;
++			}
++		}
++
++		foreach ( $dc as $field => $values ) {
++			$dc[ $field ] = array_values( array_unique( array_filter( $values, 'strlen' ) ) );
++		}
++
++		return array_filter( $dc );
++	}
++}
+diff --git a/src/classes/oaipmh/class-tainacan-oaipmh-expose.php b/src/classes/oaipmh/class-tainacan-oaipmh-expose.php
+deleted file mode 100644
+index b60c5b800..000000000
+--- a/src/classes/oaipmh/class-tainacan-oaipmh-expose.php
++++ /dev/null
+@@ -1,336 +0,0 @@
+-<?php
+-
+-namespace Tainacan\OAIPMHExpose;
+-
+-defined( 'ABSPATH' ) or die( 'No script kiddies please!' );
+-
+-use Tainacan;
+-
+-/**
+- * Support Dublin Core Mapping
+- * http://purl.org/dc/elements/1.1/
+- *
+- */
+-class OAIPMH_Expose {
+-    var $identifyResponse = array();
+-    var $deletedRecord = '';
+-    var $adminEmail = '';
+-    var $compression = '';
+-    var $expirationdatetime = '';
+-    var $delimiter = ':';
+-    var $show_identifier;
+-    var $SETS;
+-    var $METADATAFORMATS;
+-    var $supported_formats;
+-    var $MAXRECORDS;
+-    var $CONTENT_TYPE;
+-    var $charset;
+-    var $xmlescaped;
+-    var $text;
+-    var $code;
+-    var $token_valid;
+-    var $token_prefix;
+-
+-    protected $collection_repository;
+-    protected $item_repository;
+-    protected $repositoryIdentifier;
+-
+-    /**
+-     *
+-     */
+-    public function config() {
+-        $this->CONTENT_TYPE = 'Content-Type: text/xml';
+-        $this->identifyResponse["repositoryName"] = get_bloginfo( 'name');
+-        $this->identifyResponse['protocolVersion'] = '2.0';
+-        $this->identifyResponse['baseURL'] = get_bloginfo( 'url').'wp-json/tainacan/v2/oai/';
+-        $this->identifyResponse["earliestDatestamp"] = '2000-01-01';
+-        $this->identifyResponse["deletedRecord"] = 'transient';
+-        $this->identifyResponse["granularity"] = 'YYYY-MM-DDThh:mm:ssZ';
+-
+-        if (strcmp($this->identifyResponse["granularity"], 'YYYY-MM-DDThh:mm:ssZ') == 0) {
+-            $this->identifyResponse["earliestDatestamp"] = $this->identifyResponse["earliestDatestamp"] . 'T00:00:00Z';
+-        }
+-
+-        $this->adminEmail = get_bloginfo( 'admin_email');
+-
+-        /** Compression methods supported. Optional (multiple). Default: null.
+-         *
+-         * Currently only gzip is supported (you need output buffering turned on,
+-         * and php compiled with libgz).
+-         * The client MUST send "Accept-Encoding: gzip" to actually receive
+-         */
+-        $this->compression = null;
+-        $url = str_replace('https://', '', get_bloginfo( 'url'));
+-        $url = array_reverse(explode('/', str_replace('http://', '', $url)));
+-
+-        if(is_array($url)&& count($url)>1){
+-            $this->repositoryIdentifier = implode('.', $url);
+-        }else{
+-            $this->repositoryIdentifier = $url[0];
+-        }
+-
+-        $this->show_identifier = false;
+-
+-        /** Maximum mumber of the records to deliver
+-         * (verb is ListRecords)
+-         * If there are more records to deliver
+-         * a ResumptionToken will be generated.
+-         */
+-        $this->MAXRECORDS = has_filter( 'tainacan-oai-maxrecords' ) ?  apply_filters('tainacan-oai-maxrecords', 100) : 100;
+-
+-        /** After 24 hours resumptionTokens become invalid. Unit is second. */
+-        $this->token_valid = has_filter( 'tainacan-oai-token-valid' ) ?  apply_filters('tainacan-oai-token-valid', 24 * 3600) : 24 * 3600;
+-
+-        if ( !defined('TAINACAN_OAI_REPOSITORY_URL') ) {
+-            define('TAINACAN_OAI_REPOSITORY_URL', get_bloginfo( 'url' ));
+-        }
+-
+-        $this->expirationdatetime = gmstrftime('%Y-%m-%dT%TZ', time() + $this->token_valid);
+-
+-        /** Where token is saved and path is included */
+-        $token_path = $this->create_token_dir();
+-        if($token_path){
+-            $this->token_prefix = $token_path;
+-        }
+-
+-        $this->METADATAFORMATS = array(
+-            'oai_dc' => array('metadataPrefix' => 'oai_dc',
+-                'schema' => 'http://www.openarchives.org/OAI/2.0/oai_dc.xsd',
+-                'metadataNamespace' => 'http://www.openarchives.org/OAI/2.0/oai_dc/',
+-                'myhandler' => 'record_dc.php',
+-                'record_prefix' => 'dc',
+-                'record_namespace' => 'http://purl.org/dc/elements/1.1/'
+-            )
+-        );
+-
+-        if (!is_array($this->METADATAFORMATS)) {
+-            exit("Configuration of METADATAFORMAT has been wrongly set. Correct your " . __FILE__);
+-        }
+-
+-        $this->charset = "iso8859-1";
+-        $this->xmlescaped = false;
+-    }
+-
+-    /**
+-     * @param $url
+-     * @return bool
+-     */
+-    function is_valid_uri( $url ) {
+-        return ((bool) preg_match('/^[-a-z\.0-9]+$/i', $url));
+-    }
+-
+-    /**
+-     * @param $attrb
+-     * @return false|int
+-     */
+-    function is_valid_attrb($attrb) {
+-        return preg_match("/^[_a-zA-Z0-9\-\:\.]+$/", $attrb);
+-    }
+-
+-    /**
+-     * @param $datestamp
+-     * @return false|string
+-     */
+-    function formatDatestamp($datestamp) {
+-        return date("Y-m-d\TH:i:s\Z", strtotime($datestamp));
+-    }
+-
+-    /**
+-     * @param $date
+-     * @return bool|false|string
+-     */
+-    function checkDateFormat($date) {
+-        $date = str_replace(array("T", "Z"), " ", $date);
+-        $time_val = strtotime($date);
+-        if (!$time_val)
+-            return false;
+-        if (strstr($date, ":")) {
+-            return date("Y-m-d H:i:s", $time_val);
+-        } else {
+-            return date("Y-m-d", $time_val);
+-        }
+-    }
+-
+-    /**
+-     * @return array
+-     */
+-    function prepare_set_names() {
+-        global $SETS;
+-        $n = count($SETS);
+-        $a = array_fill(0, $n, '');
+-        for ($i = 0; $i < $n; $i++) {
+-            $a[$i] = $SETS[$i]['setSpec'];
+-        }
+-        return $a;
+-    }
+-
+-    /**
+-     * @param $args
+-     * @param $errors
+-     */
+-    function oai_exit($args,$errors) {
+-        header($this->CONTENT_TYPE);
+-        $e = new XML_Error($args, $errors);
+-        $e->display();
+-        exit();
+-    }
+-
+-    /**
+-     * @return bool|string
+-     */
+-    protected function create_token_dir() {
+-        $upload_dir = wp_upload_dir();
+-        $upload_dir = trailingslashit( $upload_dir['basedir'] );
+-        $logs_folder = $upload_dir . 'tainacan/tokens/';
+-
+-        if (!is_dir($logs_folder)) {
+-
+-            if( !is_dir($upload_dir . 'tainacan') && !mkdir($upload_dir . 'tainacan')){
+-                return false;
+-            }
+-
+-            if (!mkdir($logs_folder)) {
+-                return false;
+-            }
+-        }
+-
+-        return $logs_folder;
+-    }
+-
+-    /**
+-     * Generate a string based on the current Unix timestamp in microseconds for creating resumToken file name.
+-     */
+-    function get_token() {
+-        list($usec, $sec) = explode(" ", microtime());
+-        return ((int) ($usec * 1000) + (int) ($sec * 1000));
+-    }
+-
+-    /**
+-     *
+-     * Create a token file.
+-     * It has three parts which is separated by '#': cursor, extension of query, metadataPrefix.
+-     * Called by listrecords.php.
+-     */
+-    function createResumToken($cursor, $from,$until,$sets, $metadataPrefix) {
+-        $token = $this->get_token();
+-        $fp = fopen($this->token_prefix . $token, 'w');
+-        if ($fp == false) {
+-            exit("Cannot write. Writer permission needs to be changed.");
+-        }
+-        fputs($fp, "$cursor#");
+-        fputs($fp, "$from#");
+-        fputs($fp, "$until#");
+-        fputs($fp, "$sets#");
+-        fputs($fp, "$metadataPrefix#");
+-        fclose($fp);
+-        return $token;
+-    }
+-
+-    /**
+-     * Read a saved ResumToken
+-     */
+-    function readResumToken($resumptionToken) {
+-        $upload_dir = wp_upload_dir();
+-        $upload_dir = trailingslashit( $upload_dir['basedir'] );
+-        $logs_folder = $upload_dir . 'tainacan/tokens/';
+-        $real_file_path = realpath($resumptionToken);
+-        if ( strpos($real_file_path, $resumptionToken) !== 0 && strpos($real_file_path, $logs_folder) !== 0 ) {
+-            return false;
+-        }
+-        $rtVal = false;
+-        $fp = fopen($resumptionToken, 'r');
+-        if ($fp != false) {
+-            $filetext = fgets($fp, 255);
+-            $textparts = explode('#', $filetext);
+-            fclose($fp);
+-            unlink($resumptionToken);
+-            $rtVal = array((int) $textparts[0], $textparts[1], $textparts[2],$textparts[3],$textparts[4]);
+-        }
+-        return $rtVal;
+-    }
+-
+-    /**
+-     * utility funciton to mapping error codes to readable messages
+-     */
+-    function oai_error($code, $argument = '', $value = '') {
+-        switch ($code) {
+-            case 'badArgument' :
+-                $this->text = "The argument '$argument' (value='$value') included in the request is not valid.";
+-                break;
+-            case 'badGranularity' :
+-                $this->text = "The value '$value' of the argument '$argument' is not valid.";
+-                $this->code = 'badArgument';
+-                break;
+-            case 'badResumptionToken' :
+-                $this->text = "The resumptionToken '$value' does not exist or has already expired.";
+-                break;
+-            case 'badRequestMethod' :
+-                $this->text = "The request method '$argument' is unknown.";
+-                $this->code = 'badVerb';
+-                break;
+-            case 'badVerb' :
+-                $this->text = "The verb '$argument' provided in the request is illegal.";
+-                break;
+-            case 'cannotDisseminateFormat' :
+-                $this->text = "The metadata format '$value' given by $argument is not supported by this repository.";
+-                break;
+-            case 'exclusiveArgument' :
+-                $this->text = 'The usage of resumptionToken as an argument allows no other arguments.';
+-                $this->code = 'badArgument';
+-                break;
+-            case 'idDoesNotExist' :
+-                $this->text = "The value '$value' of the identifier does not exist in this repository.";
+-                if (!is_valid_uri($value)) {
+-                    $this->code = 'badArgument';
+-                    $this->text .= ' Invalidated URI has been detected.';
+-                }
+-                break;
+-            case 'missingArgument' :
+-                $this->text = "The required argument '$argument' is missing in the request.";
+-                $this->code = 'badArgument';
+-                break;
+-            case 'noRecordsMatch' :
+-                $this->text = 'The combination of the given values results in an empty list.';
+-                break;
+-            case 'noMetadataFormats' :
+-                $this->text = 'There are no metadata formats available for the specified item.';
+-                break;
+-            case 'noVerb' :
+-                $this->text = 'The request does not provide any verb.';
+-                $this->code = 'badVerb';
+-                break;
+-            case 'noSetHierarchy' :
+-                $this->text = 'This repository does not support sets.';
+-                break;
+-            case 'sameArgument' :
+-                $this->text = 'Do not use the same argument more than once.';
+-                $this->code = 'badArgument';
+-                break;
+-            case 'sameVerb' :
+-                $this->text = 'Do not use verb more than once.';
+-                $this->code = 'badVerb';
+-                break;
+-            case 'notImp' :
+-                $this->text = 'Not yet implemented.';
+-                $this->code = 'debug';
+-                break;
+-            default:
+-                $this->text = "Unknown error: $this->code: '$this->code', argument: '$argument', value: '$value'";
+-                $this->code = 'badArgument';
+-        }
+-        return $this->code . "|" . $this->text;
+-    }
+-
+-    /**
+-     * function get_metadata_formats
+-     * @param int $item_id
+-     * @return boolean
+-     */
+-    public function get_metadata_formats( $item_id = null ) {
+-        $Tainacan_Exposers = \Tainacan\Mappers_Handler::get_instance();
+-        $metadatum_mappers = $Tainacan_Exposers->get_mappers();
+-        $types = array_keys($metadatum_mappers);
+-
+-        return $types;
+-    }
+-}
+\ No newline at end of file
+diff --git a/src/classes/oaipmh/class-tainacan-oaipmh-get-record.php b/src/classes/oaipmh/class-tainacan-oaipmh-get-record.php
+deleted file mode 100644
+index 4c51c8cd1..000000000
+--- a/src/classes/oaipmh/class-tainacan-oaipmh-get-record.php
++++ /dev/null
+@@ -1,241 +0,0 @@
+-<?php
+-
+-namespace Tainacan\OAIPMHExpose;
+-
+-defined( 'ABSPATH' ) or die( 'No script kiddies please!' );
+-
+-use Tainacan\Repositories;
+-use Tainacan\Entities;
+-
+-class OAIPMH_Get_Record extends OAIPMH_Expose {
+-
+-    protected $working_node;
+-    public $errors;
+-    public $xml_creater;
+-    public $restoken = '-';
+-    public $expirationdatetime;
+-    public $num_rows;
+-    public $cursor;
+-    public $deliveredrecords;
+-    public $from;
+-    public $until;
+-    public $sets;
+-    public $metadataPrefix;
+-
+-    /**
+-     * @signature CONSTRUTOR
+-     *
+-     * getting the collection repository
+-     * @author: Eduardo
+-     */
+-    function __construct() {
+-        $this->collection_repository = Repositories\Collections::get_instance();
+-        $this->item_repository = Repositories\Items::get_instance();
+-    }
+-
+-    /**
+-     * @param $params
+-     * @return bool|Entities\Item
+-     * @throws \Exception
+-     */
+-    public function get_item( $params ) {
+-
+-        $id = str_replace('oai:'.$this->repositoryIdentifier.':','', $params['identifier']);
+-        $item = new Entities\Item( $id );
+-
+-        if ( !$item->get_id() )
+-            return false;
+-
+-        return $item;
+-    }
+-
+-
+-    /**
+-     * @param $data
+-     * @throws \Exception
+-     */
+-    public function get_record( $data ) {
+-        session_write_close();
+-
+-        $this->config();
+-        $this->initiate_variables( $data );
+-
+-        $item = $this->get_item( $data );
+-
+-        if( $item ){
+-            $formats = $this->get_metadata_formats();
+-            $prefix = ( $data['metadataPrefix'] === 'oai_dc') ? 'dublin-core' : $data['metadataPrefix'];
+-
+-            if( empty($formats) || !in_array($prefix, $formats) ){
+-                $this->errors[] = $this->oai_error('cannotDisseminateFormat');
+-                $this->oai_exit($data,$this->errors);
+-            }
+-        }else{
+-            $this->errors[] = $this->oai_error('idDoesNotExist');
+-            $this->oai_exit( $data, $this->errors);
+-        }
+-
+-        $this->xml_creater = new Xml_Response($data);
+-
+-        $collection = $item->get_collection();
+-        $identifier = 'oai:'.$this->repositoryIdentifier.':'. $item->get_id();
+-        $datestamp = $this->formatDatestamp($item->get_creation_date());
+-        $setspec = $collection->get_id();
+-        $cur_record = $this->xml_creater->create_record();
+-
+-        $this->xml_creater->create_header($identifier, $datestamp, $setspec,$cur_record, ( $item->get_status() === 'trash' ) ? true : false );
+-
+-        if( $item->get_status() !== 'trash' ){
+-            $this->working_node = $this->xml_creater->create_metadata($cur_record);
+-            $this->create_metadata_node( $item, $collection, $cur_record);
+-        }
+-
+-        ob_start('ob_gzhandler');
+-        header($this->CONTENT_TYPE);
+-        
+-        if (isset($this->xml_creater)) {
+-            $this->xml_creater->display();
+-        } else {
+-            exit("There is a bug in codes");
+-        }
+-
+-        ob_end_flush();
+-    }
+-
+-    /**
+-     * Gets the current mapper object, if one was chosen by the user, false Otherwise
+-     */
+-    public function get_current_mapper() {
+-        $prefix = ($this->metadataPrefix === 'oai_dc') ? 'dublin-core' : $this->metadataPrefix;
+-
+-        return \Tainacan\Mappers_Handler::get_instance()->get_mapper($prefix);
+-    }
+-
+-    /**
+-     * @signature - create_metadata_node
+-     * @param  \Tainacan\Entities\Item $item
+-     * @param  wp_post $collection O objeto da colecao
+-     * @return Adciona no  noh <metadata> os valores necessarios
+-     * @description - Metodo responsavel realizar o povoamento no noh metadata
+-     * @author: Eduardo
+-     */
+-    protected function create_metadata_node( $item, $collection,$record_node = null) {
+-        $this->working_node = $this->xml_creater->addChild($this->working_node, 'oai_dc:dc');
+-        $this->working_node->setAttribute('xmlns:oai_dc', "http://www.openarchives.org/OAI/2.0/oai_dc/");
+-        $this->working_node->setAttribute('xmlns:dc', "http://purl.org/dc/elements/1.1/");
+-        $this->working_node->setAttribute('xmlns:xsi', "http://www.w3.org/2001/XMLSchema-instance");
+-        $this->working_node->setAttribute('xsi:schemaLocation', 'http://www.openarchives.org/OAI/2.0/oai_dc/ http://www.openarchives.org/OAI/2.0/oai_dc.xsd');
+-        $maps = $this->map_item_metadata($item);
+-
+-        try {
+-            if ( $maps ) {
+-                foreach ( $maps as $key => $val ) {
+-                    if ( $val && is_object($val) ) {
+-                        $item_metadatum_value = $val->get_value();
+-                        $item_metadatum_value = is_array($item_metadatum_value) ? $item_metadatum_value : [$item_metadatum_value];
+- 
+-                        array_map( function($value) use ($key) {
+-                            $this->xml_creater->addChild($this->working_node, $key, html_entity_decode($value));
+-                        }, $item_metadatum_value);
+-                     
+-                    }
+-                }
+-            }
+-        } catch(Exception $e) {
+-            error_log(print_r($e, true) . ' - ' . print_r($this->working_node, true) . ' - dc:' . esc_html($key));
+-        }
+-    }
+-
+-    /**
+-     * Gets an Item as input and return an array of ItemMetadataObjects
+-     * If a mapper is selected, the array keys will be the slugs of the metadata
+-     * declared by the mapper, in the same order.
+-     * Note that if one of the metadata is not mapped, this array item will be null
+-     */
+-    private function map_item_metadata(\Tainacan\Entities\Item $item) {
+-        $prefix = ($this->metadataPrefix === 'oai_dc') ? 'dublin-core' : $this->metadataPrefix;
+-        $mapper = $this->get_current_mapper();
+-        $metadata = $item->get_metadata();
+-        if (!$mapper) {
+-            return $metadata;
+-        }
+-        $pre = [];
+-        foreach ($metadata as $item_metadata) {
+-            $metadatum = $item_metadata->get_metadatum();
+-            $meta_mappings = $metadatum->get_exposer_mapping();
+-            if ( array_key_exists($prefix, $meta_mappings) ) {
+-
+-                $pre[ $meta_mappings[$prefix] ] = $item_metadata;
+-            }
+-        }
+-
+-        // reorder
+-        $return = [];
+-        foreach ( $mapper->metadata as $meta_slug => $meta ) {
+-            if ( array_key_exists($meta_slug, $pre) ) {
+-                $return[$meta_slug] = $pre[$meta_slug];
+-            } else {
+-                $return[$meta_slug] = null;
+-            }
+-        }
+-
+-        return $return;
+-
+-    }
+-
+-    /**
+-     * @param $data
+-     */
+-    public function initiate_variables( $data ) {
+-
+-        if ( isset($data['resumptionToken']) ) {
+-
+-            if ( !file_exists($this->token_prefix . $data['resumptionToken']) ) {
+-                $this->errors[] = $this->oai_error('badResumptionToken', '', $data['resumptionToken']);
+-            } else {
+-                $readings = $this->readResumToken($this->token_prefix . $data['resumptionToken']);
+-                if ($readings == false) {
+-                    $this->errors[] = $this->oai_error('badResumptionToken', '', $data['resumptionToken']);
+-                } else {
+-                    list($this->deliveredrecords, $this->from, $this->until, $sets, $this->metadataPrefix) = $readings;
+-                    if($sets=='-'){
+-                        $this->sets = array();
+-                    }else{
+-                        $this->sets = explode(',', $sets);
+-                    }
+-                }
+-            }
+-
+-        } else {
+-            $this->deliveredrecords = 0;
+-
+-            if (isset($data['set'])) {
+-                if (is_array($data['set'])) {
+-                    $this->sets = $data['set'];
+-                } else {
+-                    $this->sets = array($data['set']);
+-                }
+-            } else {
+-                $this->sets = array();
+-            }
+-
+-            if (isset($data['from'])) {
+-                $this->from = $data['from'];
+-            } else {
+-                $this->from = '-';
+-            }
+-
+-            if (isset($data['until'])) {
+-                $this->until = $data['until'];
+-            } else {
+-                $this->until = '-';
+-            }
+-
+-            $this->metadataPrefix =  $data['metadataPrefix'];
+-        }
+-
+-        if(is_array($this->errors)&&count($this->errors)>0){
+-            $this->oai_exit($data,$this->errors);
+-        }
+-    }
+-}
+\ No newline at end of file
+diff --git a/src/classes/oaipmh/class-tainacan-oaipmh-identify.php b/src/classes/oaipmh/class-tainacan-oaipmh-identify.php
+deleted file mode 100644
+index d0ffbbd7b..000000000
+--- a/src/classes/oaipmh/class-tainacan-oaipmh-identify.php
++++ /dev/null
+@@ -1,44 +0,0 @@
+-<?php
+-
+-namespace Tainacan\OAIPMHExpose;
+-
+-defined( 'ABSPATH' ) or die( 'No script kiddies please!' );
+-
+-class OAIPMH_Identify extends OAIPMH_Expose {
+-
+-    protected $working_node;
+-
+-    /**
+-     * @param $data
+-     */
+-    public function identify($data) {
+-
+-        $this->config();
+-        $this->xml_creater = new Xml_Response($data);
+-        $this->xml_creater->add2_verbNode('repositoryName',$this->identifyResponse["repositoryName"]);
+-        $this->xml_creater->add2_verbNode('baseURL',$this->identifyResponse["baseURL"]);
+-        $this->xml_creater->add2_verbNode('protocolVersion',$this->identifyResponse["protocolVersion"]);
+-        $this->xml_creater->add2_verbNode('adminEmail',$this->adminEmail);
+-        $this->xml_creater->add2_verbNode('earliestDatestamp',$this->identifyResponse["earliestDatestamp"]);
+-        $this->xml_creater->add2_verbNode('deletedRecord',$this->identifyResponse["deletedRecord"]);
+-        $this->xml_creater->add2_verbNode('granularity',$this->identifyResponse["granularity"]);
+-
+-        $description_node = $this->xml_creater->add2_verbNode('description');
+-        $this->working_node = $this->xml_creater->addChild($description_node, 'oai-identifier');
+-        $this->working_node->setAttribute('xmlns', "http://www.openarchives.org/OAI/2.0/oai-identifier");
+-        $this->working_node->setAttribute('xmlns:xsi', "http://www.w3.org/2001/XMLSchema-instance");
+-        $this->working_node->setAttribute('xsi:schemaLocation', 'http://www.openarchives.org/OAI/2.0/oai-identifier http://www.openarchives.org/OAI/2.0/oai-identifier.xsd');
+-        $this->xml_creater->addChild($this->working_node, 'scheme',  'oai');
+-        $this->xml_creater->addChild($this->working_node, 'repositoryIdentifier',  $this->repositoryIdentifier);
+-        $this->xml_creater->addChild($this->working_node, 'delimiter',  ':');
+-        $this->xml_creater->addChild($this->working_node, 'sampleIdentifier',  'oai:'.$this->repositoryIdentifier.':1');
+-
+-        header($this->CONTENT_TYPE);
+-        if (isset($this->xml_creater)) {
+-            $this->xml_creater->display();
+-        } else {
+-            exit("There is a bug in codes");
+-        }
+-    }
+-
+-}
+\ No newline at end of file
+diff --git a/src/classes/oaipmh/class-tainacan-oaipmh-list-identifiers.php b/src/classes/oaipmh/class-tainacan-oaipmh-list-identifiers.php
+deleted file mode 100644
+index 3b977531c..000000000
+--- a/src/classes/oaipmh/class-tainacan-oaipmh-list-identifiers.php
++++ /dev/null
+@@ -1,220 +0,0 @@
+-<?php
+-
+-namespace Tainacan\OAIPMHExpose;
+-
+-defined( 'ABSPATH' ) or die( 'No script kiddies please!' );
+-
+-use Tainacan\Repositories;
+-use Tainacan\Entities;
+-
+-class OAIPMH_List_Identifiers extends OAIPMH_Expose {
+-
+-    protected $working_node;
+-    public $errors;
+-    public $xml_creater;
+-    public $restoken = '-';
+-    public $expirationdatetime;
+-    public $num_rows;
+-    public $cursor;
+-    public $deliveredrecords;
+-    public $from;
+-    public $until;
+-    public $sets;
+-    public $metadataPrefix;
+-
+-    /**
+-     * @signature CONSTRUTOR
+-     *
+-     * getting the collection repository
+-     * @author: Eduardo
+-     */
+-    function __construct() {
+-        $this->collection_repository = Repositories\Collections::get_instance();
+-        $this->item_repository = Repositories\Items::get_instance();
+-    }
+-
+-    /**
+-     * @return array
+-     * @throws \Exception
+-     */
+-    public function list_collections() {
+-        $collections = $this->collection_repository->fetch([]);
+-
+-        $response = [];
+-        if($collections->have_posts()){
+-            while ($collections->have_posts()){
+-                $collections->the_post();
+-
+-                $collection = new Entities\Collection($collections->post);
+-                array_push($response, $collection);
+-            }
+-
+-            wp_reset_postdata();
+-        }
+-
+-        return $response;
+-    }
+-
+-    /**
+-     * main method return the items, filtered or not filtered
+-     *
+-     * @return array
+-     */
+-    public function get_items() {
+-
+-        $args = [
+-            'posts_per_page' => $this->MAXRECORDS,
+-            'paged' => $this->deliveredrecords == 0 ? 1 : ( $this->deliveredrecords / 100 ) + 1,
+-            'order' => 'DESC',
+-            'orderby' => 'ID',
+-            'post_status' => array( 'trash', 'publish' )
+-        ];
+-
+-        if( empty($this->sets) )
+-            return $this->item_repository->fetch($args, [], 'OBJECT');
+-
+-        $collections = $this->list_collections();
+-        $collections_list = [];
+-
+-        foreach ( $collections as $collection ) {
+-            if( !empty($this->sets) && !in_array($collection->get_id(), $this->sets)){
+-                continue;
+-            }
+-
+-            $collections_list[] = $collection;
+-        }
+-
+-        return $this->item_repository->fetch($args, $collections_list, 'OBJECT');
+-        
+-    }
+-
+-
+-    /**
+-     * @signature - list_identifiers
+-     * @param  array $param Os argumentos vindos da url (verb,until,from,set,metadataprefix,resumptioToken)
+-     * @return mostra o xml do list record desejado
+-     * @description - Metodo responsavel em mostrar o xml do list records, o metodo executado no controller
+-     * ele chama os demais metodos que fazem as verificacoes de erros
+-     * @author: Eduardo
+-     */
+-    public function list_identifiers($data) {
+-        session_write_close();
+-
+-        $this->config();
+-        $this->initiate_variables($data);
+-
+-        $items = $this->get_items();
+-        $numRows = count($items);
+-        if($numRows == 0){
+-            $this->errors[] = $this->oai_error('noRecordsMatch');
+-            $this->oai_exit($data,$this->errors);
+-        }
+-
+-        $this->verify_resumption_token($numRows);
+-
+-        $this->xml_creater = new Xml_Response($data);
+-
+-        foreach ( $items as $item ) {
+-            $collection = $item->get_collection();
+-            $identifier = 'oai:'.$this->repositoryIdentifier.':'. $item->get_id();
+-            $datestamp = $this->formatDatestamp($item->get_creation_date());
+-            $setspec = $collection->get_id();
+-            $cur_header = $this->xml_creater->create_header($identifier, $datestamp, $setspec, null, ( $item->get_status() === 'trash' ) ? true : false );
+-
+-        }
+-
+-        //resumptionToken
+-        $this->add_resumption_token_xml($numRows);
+-        ob_start('ob_gzhandler');
+-        header($this->CONTENT_TYPE);
+-        
+-        if (isset($this->xml_creater)) {
+-            $this->xml_creater->display();
+-        } else {
+-            exit("There is a bug in codes");
+-        }
+-
+-        ob_end_flush();
+-    }
+-
+-    /**
+-     * @param $data
+-     */
+-    public function initiate_variables( $data ) {
+-
+-        if ( isset($data['resumptionToken']) ) {
+-
+-            if ( !file_exists($this->token_prefix . $data['resumptionToken']) ) {
+-                $this->errors[] = $this->oai_error('badResumptionToken', '', $data['resumptionToken']);
+-            } else {
+-                $readings = $this->readResumToken($this->token_prefix . $data['resumptionToken']);
+-                if ($readings == false) {
+-                    $this->errors[] = $this->oai_error('badResumptionToken', '', $data['resumptionToken']);
+-                } else {
+-                    list($this->deliveredrecords, $this->from, $this->until, $sets, $this->metadataPrefix) = $readings;
+-                    if($sets=='-'){
+-                        $this->sets = array();
+-                    }else{
+-                        $this->sets = explode(',', $sets);
+-                    }
+-                }
+-            }
+-
+-        } else {
+-            $this->deliveredrecords = 0;
+-
+-            if (isset($data['set'])) {
+-                if (is_array($data['set'])) {
+-                    $this->sets = $data['set'];
+-                } else {
+-                    $this->sets = array($data['set']);
+-                }
+-            } else {
+-                $this->sets = array();
+-            }
+-
+-            if (isset($data['from'])) {
+-                $this->from = $data['from'];
+-            } else {
+-                $this->from = '-';
+-            }
+-
+-            if (isset($data['until'])) {
+-                $this->until = $data['until'];
+-            } else {
+-                $this->until = '-';
+-            }
+-
+-            $this->metadataPrefix =  $data['metadataPrefix'];
+-        }
+-
+-        if(is_array($this->errors)&&count($this->errors)>0){
+-            $this->oai_exit($data,$this->errors);
+-        }
+-    }
+-
+-    public function verify_resumption_token($numRows) {
+-
+-        if ( $numRows === $this->MAXRECORDS ) {
+-            if( implode(',',$this->sets) ==  ''){
+-                $this->sets = '-';
+-            }else{
+-                $this->sets = implode(',',$this->sets);
+-            }
+-            $this->cursor = (int) $this->deliveredrecords + $this->MAXRECORDS;
+-            $this->restoken = $this->createResumToken($this->cursor, $this->from,$this->until,$this->sets, $this->metadataPrefix);
+-            $this->expirationdatetime = date("Y-m-d\TH:i:s\Z", time() + $this->token_valid);
+-        }
+-    }
+-
+-    public function add_resumption_token_xml($numRows) {
+-        // ResumptionToken
+-        if ( $this->restoken != '-') {
+-            if ($this->expirationdatetime) {
+-                $this->xml_creater->create_resumpToken($this->restoken, $this->expirationdatetime, $numRows, $this->cursor);
+-            } else {
+-                $this->xml_creater->create_resumpToken('', null, $numRows, $this->deliveredrecords);
+-            }
+-        }
+-    }
+-}
+\ No newline at end of file
+diff --git a/src/classes/oaipmh/class-tainacan-oaipmh-list-metadata-formats.php b/src/classes/oaipmh/class-tainacan-oaipmh-list-metadata-formats.php
+deleted file mode 100644
+index 0ac4d7a2d..000000000
+--- a/src/classes/oaipmh/class-tainacan-oaipmh-list-metadata-formats.php
++++ /dev/null
+@@ -1,68 +0,0 @@
+-<?php
+-
+-namespace Tainacan\OAIPMHExpose;
+-
+-defined( 'ABSPATH' ) or die( 'No script kiddies please!' );
+-
+-class OAIPMH_List_Metadata_Formats extends OAIPMH_Expose {
+-
+-    protected $working_node;
+-    public $errors;
+-    public $xml_creater;
+-    public $restoken = '-';
+-    public $expirationdatetime;
+-    public $num_rows;
+-    public $cursor;
+-    public $deliveredrecords;
+-    public $from;
+-    public $until;
+-    public $sets;
+-    public $metadataPrefix;
+-
+-    /**
+-     * @param $data
+-     * @throws \Exception
+-     */
+-    public function list_metadata_formats( $data ) {
+-        session_write_close();
+-        $formats = array();
+-
+-        $this->config();
+-        $this->xml_creater = new Xml_Response($data);
+-
+-        if( isset($data['identifier']) ){// se estiver olhando por metadados de um unico objeto
+-            $item_id = str_replace('oai:'.$this->repositoryIdentifier.':','', $data['identifier']);
+-            $item = new \Tainacan\Entities\Item($item_id);
+-
+-            if( $item->get_id() && $item->get_status() =='publish' ){
+-                $formats = $this->get_metadata_formats($item->get_id());
+-                if(empty($formats)){
+-                    $this->errors[] = $this->oai_error('noMetadataFormats');
+-                    $this->oai_exit($data,$this->errors);
+-                }
+-            }else{
+-                $this->errors[] = $this->oai_error('idDoesNotExist');
+-                $this->oai_exit($data,$this->errors);
+-            }
+-        }
+-
+-        foreach ( $this->get_metadata_formats() as $metadata_format) {
+-            if(!empty($formats)&&!in_array($metadata_format['metadataPrefix'], $formats)){
+-                continue;
+-            }
+-            $description_node = $this->xml_creater->add2_verbNode('metadataFormat');
+-            $this->xml_creater->addChild($description_node, 'metadataPrefix', $metadata_format);
+-            $this->xml_creater->addChild($description_node, 'schema', 'http://www.openarchives.org/OAI/2.0/oai_dc.xsd');
+-            $this->xml_creater->addChild($description_node, 'metadataNamespace', 'http://www.openarchives.org/OAI/2.0/oai_dc/');
+-        }
+-
+-        header($this->CONTENT_TYPE);
+-
+-        if (isset($this->xml_creater)) {
+-            $this->xml_creater->display();
+-        } else {
+-            exit("There is a bug in codes");
+-        }
+-    }
+-
+-}
+\ No newline at end of file
+diff --git a/src/classes/oaipmh/class-tainacan-oaipmh-list-records.php b/src/classes/oaipmh/class-tainacan-oaipmh-list-records.php
+deleted file mode 100644
+index 110dae2e5..000000000
+--- a/src/classes/oaipmh/class-tainacan-oaipmh-list-records.php
++++ /dev/null
+@@ -1,304 +0,0 @@
+-<?php
+-
+-namespace Tainacan\OAIPMHExpose;
+-
+-defined( 'ABSPATH' ) or die( 'No script kiddies please!' );
+-
+-use Tainacan\Repositories;
+-use Tainacan\Entities;
+-
+-class OAIPMH_List_Records extends OAIPMH_Expose {
+-
+-    protected $working_node;
+-    public $errors;
+-    public $xml_creater;
+-    public $restoken = '-';
+-    public $expirationdatetime;
+-    public $num_rows;
+-    public $cursor;
+-    public $deliveredrecords;
+-    public $from;
+-    public $until;
+-    public $sets;
+-    public $metadataPrefix;
+-    
+-
+-    /**
+-     * @signature CONSTRUTOR
+-     *
+-     * getting the collection repository
+-     * @author: Eduardo
+-     */
+-    function __construct() {
+-        $this->collection_repository = Repositories\Collections::get_instance();
+-        $this->item_repository = Repositories\Items::get_instance();
+-    }
+-
+-    /**
+-     * @return array
+-     * @throws \Exception
+-     */
+-    public function list_collections() {
+-        $collections = $this->collection_repository->fetch([]);
+-
+-        $response = [];
+-        if($collections->have_posts()){
+-            while ($collections->have_posts()){
+-                $collections->the_post();
+-
+-                $collection = new Entities\Collection($collections->post);
+-                array_push($response, $collection);
+-            }
+-
+-            wp_reset_postdata();
+-        }
+-
+-        return $response;
+-    }
+-
+-    /**
+-     * main method return the items, filtered or not filtered
+-     *
+-     * @return array
+-     */
+-    public function get_items() {
+-
+-        $args = [
+-            'posts_per_page' => $this->MAXRECORDS,
+-            'paged' => $this->deliveredrecords == 0 ? 1 : ( $this->deliveredrecords / 100 ) + 1,
+-            'order' => 'DESC',
+-            'orderby' => 'ID',
+-            'post_status' => array( 'trash', 'publish' )
+-        ];
+-
+-        if ( empty($this->sets) )
+-            return $this->item_repository->fetch($args, [], 'OBJECT');
+-    
+-        $collections = $this->list_collections();
+-        $collections_list = [];
+-
+-        foreach ( $collections as $collection ) {
+-            if( !empty($this->sets) && !in_array($collection->get_id(), $this->sets)){
+-                continue;
+-            }
+-
+-            $collections_list[] = $collection;
+-        }
+-
+-        return $this->item_repository->fetch($args, $collections_list, 'OBJECT');
+-        
+-    }
+-
+-
+-    /**
+-     * @signature - list_records
+-     * @param  array $param Os argumentos vindos da url (verb,until,from,set,metadataprefix,resumptioToken)
+-     * @return mostra o xml do list record desejado
+-     * @description - Metodo responsavel em mostrar o xml do list records, o metodo executado no controller
+-     * ele chama os demais metodos que fazem as verificacoes de erros
+-     * @author: Eduardo
+-     */
+-    public function list_records($data) {
+-        session_write_close();
+-
+-        $this->config();
+-        $this->initiate_variables($data);
+-
+-        $items = $this->get_items();
+-        $numRows = count($items);
+-        if($numRows == 0){
+-            $this->errors[] = $this->oai_error('noRecordsMatch');
+-            $this->oai_exit($data,$this->errors);
+-        }
+-
+-        $this->verify_resumption_token($numRows);
+-
+-        $this->xml_creater = new Xml_Response($data);
+-
+-        foreach ( $items as $item ) {
+-            $collection = $item->get_collection();
+-            $identifier = 'oai:'.$this->repositoryIdentifier.':'. $item->get_id();
+-            $datestamp = $this->formatDatestamp($item->get_creation_date());
+-            $setspec = $collection->get_id();
+-            $cur_record = $this->xml_creater->create_record();
+-            $cur_header = $this->xml_creater->create_header($identifier, $datestamp, $setspec,$cur_record, ( $item->get_status() === 'trash' ) ? true : false );
+-
+-            if( $item->get_status() !== 'trash' ){
+-                $this->working_node = $this->xml_creater->create_metadata($cur_record);
+-                $this->create_metadata_node( $item, $collection, $cur_record);
+-            }
+-
+-        }
+-
+-        //resumptionToken
+-        $this->add_resumption_token_xml($numRows);
+-        ob_start('ob_gzhandler');
+-        header($this->CONTENT_TYPE);
+-        
+-        if (isset($this->xml_creater)) {
+-            $this->xml_creater->display();
+-        } else {
+-            exit("There is a bug in codes");
+-        }
+-
+-        ob_end_flush();
+-    }
+-
+-    /**
+-     * Gets the current mapper object, if one was chosen by the user, false Otherwise
+-     */
+-    public function get_current_mapper() {
+-        $prefix = ($this->metadataPrefix === 'oai_dc') ? 'dublin-core' : $this->metadataPrefix;
+-
+-        return \Tainacan\Mappers_Handler::get_instance()->get_mapper($prefix);
+-    }
+-
+-    /**
+-     * @signature - create_metadata_node
+-     * @param  \Tainacan\Entities\Item $item
+-     * @param  wp_post $collection O objeto da colecao
+-     * @return Adciona no  noh <metadata> os valores necessarios
+-     * @description - Metodo responsavel realizar o povoamento no noh metadata
+-     * @author: Eduardo
+-     */
+-    protected function create_metadata_node( $item, $collection,$record_node = null) {
+-        $this->working_node = $this->xml_creater->addChild($this->working_node, 'oai_dc:dc');
+-        $this->working_node->setAttribute('xmlns:oai_dc', "http://www.openarchives.org/OAI/2.0/oai_dc/");
+-        $this->working_node->setAttribute('xmlns:dc', "http://purl.org/dc/elements/1.1/");
+-        $this->working_node->setAttribute('xmlns:xsi', "http://www.w3.org/2001/XMLSchema-instance");
+-        $this->working_node->setAttribute('xsi:schemaLocation', 'http://www.openarchives.org/OAI/2.0/oai_dc/ http://www.openarchives.org/OAI/2.0/oai_dc.xsd');
+-        $maps = $this->map_item_metadata($item);
+-
+-        try{
+-            if ($maps) {
+-                foreach ($maps as $key => $val) {
+-
+-                    if( $val && is_object($val) )
+-                        $this->xml_creater->addChild($this->working_node, $key, html_entity_decode($val->get_value_as_string()));
+-                    else
+-                        $this->xml_creater->addChild($this->working_node, $key, '');
+-                }
+-            }
+-        }catch(\Exception $e){
+-            error_log(print_r($e, true) . ' - ' . print_r($this->working_node, true) . ' - dc:' . esc_html($key ?? ''));
+-        }
+-    }
+-
+-    /**
+-     * Gets an Item as input and return an array of ItemMetadataObjects
+-     * If a mapper is selected, the array keys will be the slugs of the metadata
+-     * declared by the mapper, in the same order.
+-     * Note that if one of the metadata is not mapped, this array item will be null
+-     */
+-    private function map_item_metadata(\Tainacan\Entities\Item $item) {
+-        $prefix = ($this->metadataPrefix === 'oai_dc') ? 'dublin-core' : $this->metadataPrefix;
+-        $mapper = $this->get_current_mapper();
+-        $metadata = $item->get_metadata();
+-        if (!$mapper) {
+-            return $metadata;
+-        }
+-        $pre = [];
+-        foreach ($metadata as $item_metadata) {
+-            $metadatum = $item_metadata->get_metadatum();
+-            $meta_mappings = $metadatum->get_exposer_mapping();
+-            if ( array_key_exists($prefix, $meta_mappings) ) {
+-
+-                $pre[ $meta_mappings[$prefix] ] = $item_metadata;
+-            }
+-        }
+-
+-        // reorder
+-        $return = [];
+-        foreach ( $mapper->metadata as $meta_slug => $meta ) {
+-            if ( array_key_exists($meta_slug, $pre) ) {
+-                $return[$meta_slug] = $pre[$meta_slug];
+-            } else {
+-                $return[$meta_slug] = null;
+-            }
+-        }
+-
+-        return $return;
+-
+-    }
+-
+-    /**
+-     * @param $data
+-     */
+-    public function initiate_variables( $data ) {
+-
+-        if ( isset($data['resumptionToken']) ) {
+-
+-            if ( !file_exists($this->token_prefix . $data['resumptionToken']) ) {
+-                $this->errors[] = $this->oai_error('badResumptionToken', '', $data['resumptionToken']);
+-            } else {
+-                $readings = $this->readResumToken($this->token_prefix . $data['resumptionToken']);
+-                if ($readings == false) {
+-                    $this->errors[] = $this->oai_error('badResumptionToken', '', $data['resumptionToken']);
+-                } else {
+-                    list($this->deliveredrecords, $this->from, $this->until, $sets, $this->metadataPrefix) = $readings;
+-                    if($sets=='-'){
+-                        $this->sets = array();
+-                    }else{
+-                        $this->sets = explode(',', $sets);
+-                    }
+-                }
+-            }
+-
+-        } else {
+-            $this->deliveredrecords = 0;
+-
+-            if (isset($data['set'])) {
+-                if (is_array($data['set'])) {
+-                    $this->sets = $data['set'];
+-                } else {
+-                    $this->sets = array($data['set']);
+-                }
+-            } else {
+-                $this->sets = array();
+-            }
+-
+-            if (isset($data['from'])) {
+-                $this->from = $data['from'];
+-            } else {
+-                $this->from = '-';
+-            }
+-
+-            if (isset($data['until'])) {
+-                $this->until = $data['until'];
+-            } else {
+-                $this->until = '-';
+-            }
+-
+-            $this->metadataPrefix =  $data['metadataPrefix'];
+-        }
+-
+-        if(is_array($this->errors)&&count($this->errors)>0){
+-            $this->oai_exit($data,$this->errors);
+-        }
+-    }
+-
+-    public function verify_resumption_token($numRows) {
+-
+-        if ( $numRows === $this->MAXRECORDS ) {
+-            if( implode(',',$this->sets) ==  ''){
+-                $this->sets = '-';
+-            }else{
+-                $this->sets = implode(',',$this->sets);
+-            }
+-            $this->cursor = (int) $this->deliveredrecords + $this->MAXRECORDS;
+-            $this->restoken = $this->createResumToken($this->cursor, $this->from,$this->until,$this->sets, $this->metadataPrefix);
+-            $this->expirationdatetime = date("Y-m-d\TH:i:s\Z", time() + $this->token_valid);
+-        }
+-    }
+-
+-    public function add_resumption_token_xml($numRows) {
+-        // ResumptionToken
+-        if ( $this->restoken != '-') {
+-            if ($this->expirationdatetime) {
+-                $this->xml_creater->create_resumpToken($this->restoken, $this->expirationdatetime, $numRows, $this->cursor);
+-            } else {
+-                $this->xml_creater->create_resumpToken('', null, $numRows, $this->deliveredrecords);
+-            }
+-        }
+-    }
+-}
+\ No newline at end of file
+diff --git a/src/classes/oaipmh/class-tainacan-oaipmh-list-sets.php b/src/classes/oaipmh/class-tainacan-oaipmh-list-sets.php
+deleted file mode 100644
+index 750b91d88..000000000
+--- a/src/classes/oaipmh/class-tainacan-oaipmh-list-sets.php
++++ /dev/null
+@@ -1,181 +0,0 @@
+-<?php
+-
+-namespace Tainacan\OAIPMHExpose;
+-
+-defined( 'ABSPATH' ) or die( 'No script kiddies please!' );
+-
+-use Tainacan\Repositories;
+-use Tainacan\Entities;
+-
+-class OAIPMH_List_Sets extends OAIPMH_Expose {
+-
+-    protected $working_node;
+-    public $errors;
+-    public $xml_creater;
+-    public $restoken = '-';
+-    public $expirationdatetime;
+-    public $num_rows;
+-    public $cursor;
+-    public $deliveredrecords;
+-    public $from;
+-    public $until;
+-    public $sets;
+-    public $metadataPrefix;
+-    public $collection_repository;
+-
+-    /**
+-     * @signature CONSTRUTOR
+-     *
+-     * getting the collection repository
+-     * @author: Eduardo
+-     */
+-    function __construct() {
+-        $this->collection_repository = Repositories\Collections::get_instance();
+-    }
+-
+-    /**
+-     * @return array
+-     * @throws \Exception
+-     */
+-    public function list_collections() {
+-        $collections = $this->collection_repository->fetch([]);
+-
+-        $response = [];
+-        if($collections->have_posts()){
+-            while ($collections->have_posts()){
+-                $collections->the_post();
+-
+-                $collection = new Entities\Collection($collections->post);
+-                array_push($response, $collection);
+-            }
+-
+-            wp_reset_postdata();
+-        }
+-
+-        return $response;
+-    }
+-
+-    /**
+-     * @param $objects
+-     * @return array
+-     */
+-    public function limit_data($objects){
+-        $conter = 0;
+-        $result_objects = array();
+-
+-        foreach ($objects as $object) {
+-            if( $conter >= $this->deliveredrecords && ($this->deliveredrecords+$this->MAXRECORDS) > $conter ){
+-                $result_objects[] = $object;
+-            }
+-            $conter++;
+-        }
+-
+-        return $result_objects;
+-    }
+-
+-    /*
+-     *
+-     */
+-    public function list_sets($data) {
+-        session_write_close();
+-
+-        $this->config();
+-        $this->initiate_variables($data);
+-
+-        $collections = $this->list_collections();
+-        $numRows = count($collections);
+-
+-        if($numRows == 0){
+-            $this->errors[] = $this->oai_error('noSetHierarchy');
+-            $this->oai_exit($data,$this->errors);
+-        }
+-
+-        $collections = $this->limit_data($collections);
+-        $this->verify_resumption_token($numRows);
+-        $this->xml_creater = new Xml_Response($data);
+-
+-        foreach ($collections as $collection) {
+-
+-            $setNode =  $this->xml_creater->add2_verbNode("set");
+-            $this->xml_creater->addChild($setNode,'setSpec',$collection->get_id());
+-            $this->xml_creater->addChild($setNode,'setName',$collection->get_name());
+-            $description_node = $this->xml_creater->addChild($setNode,'setDescription');
+-            $this->working_node = $this->xml_creater->addChild($description_node, 'oai_dc:dc');
+-            $this->working_node->setAttribute('xmlns:oai_dc', "http://www.openarchives.org/OAI/2.0/oai_dc/");
+-            $this->working_node->setAttribute('xmlns:dc', "http://purl.org/dc/elements/1.1/");
+-            $this->working_node->setAttribute('xmlns:xsi', "http://www.w3.org/2001/XMLSchema-instance");
+-            $this->working_node->setAttribute('xsi:schemaLocation', 'http://www.openarchives.org/OAI/2.0/oai_dc/ http://www.openarchives.org/OAI/2.0/oai_dc.xsd');
+-            $this->xml_creater->addChild($this->working_node, 'dc:description',htmlspecialchars($collection->get_description()));
+-        }
+-
+-
+-        $this->add_resumption_token_xml($numRows);
+-        header($this->CONTENT_TYPE);
+-        if (isset($this->xml_creater)) {
+-            $this->xml_creater->display();
+-        } else {
+-            exit("There is a bug in codes");
+-        }
+-    }
+-
+-    /**
+-     * @param $data
+-     */
+-    public function initiate_variables($data) {
+-
+-        if (isset($data['resumptionToken'])) {
+-
+-            if (!file_exists($this->token_prefix . $data['resumptionToken'])) {
+-                $this->errors[] = $this->oai_error('badResumptionToken', '', $data['resumptionToken']);
+-            } else {
+-                $readings = $this->readResumToken($this->token_prefix . $data['resumptionToken']);
+-                if ($readings == false) {
+-                    $this->errors[] = $this->oai_error('badResumptionToken', '', $data['resumptionToken']);
+-                } else {
+-                    list($this->deliveredrecords, $this->from, $this->until, $this->sets, $this->metadataPrefix) = $readings;
+-                }
+-            }
+-
+-        } else {
+-            $this->deliveredrecords = 0;
+-            $this->sets = '-';
+-            $this->from = '-';
+-            $this->until = '-';
+-            $this->metadataPrefix =  '-';
+-        }
+-
+-        if(is_array($this->errors)&&count($this->errors)>0){
+-            $this->oai_exit($data,$this->errors);
+-        }
+-    }
+-
+-    /**
+-     * @param $numRows
+-     */
+-    public function verify_resumption_token($numRows) {
+-        if ($numRows - $this->deliveredrecords > $this->MAXRECORDS) {
+-            if(implode(',',$this->sets)==''){
+-                $this->sets = '-';
+-            }else{
+-                $this->sets = implode(',',$this->sets);
+-            }
+-            $this->cursor = (int) $this->deliveredrecords + $this->MAXRECORDS;
+-            $this->restoken = $this->createResumToken($this->cursor, $this->from,$this->until,$this->sets, $this->metadataPrefix);
+-            $this->expirationdatetime = date("Y-m-d\TH:i:s\Z", time() + $this->token_valid);
+-        }
+-    }
+-
+-    /**
+-     * @param $numRows
+-     */
+-    public function add_resumption_token_xml($numRows) {
+-        // ResumptionToken
+-        if ($this->restoken!='-') {
+-            if ($this->expirationdatetime) {
+-                $this->xml_creater->create_resumpToken($this->restoken, $this->expirationdatetime, $numRows, $this->cursor);
+-            } else {
+-                $this->xml_creater->create_resumpToken('', null, $numRows, $this->deliveredrecords);
+-            }
+-        }
+-    }
+-}
+\ No newline at end of file
+diff --git a/src/classes/oaipmh/class-tainacan-oaipmh-token-manager.php b/src/classes/oaipmh/class-tainacan-oaipmh-token-manager.php
+new file mode 100644
+index 000000000..98d199dcb
+--- /dev/null
++++ b/src/classes/oaipmh/class-tainacan-oaipmh-token-manager.php
+@@ -0,0 +1,54 @@
++<?php
++
++namespace Tainacan\OAIPMHExpose;
++
++defined( 'ABSPATH' ) or die( 'No script kiddies please!' );
++
++/**
++ * resumptionToken storage backed by WordPress transients.
++ *
++ * Tokens carry the pagination state of a ListRecords/ListIdentifiers harvest.
++ * Transients give automatic expiration and need no custom table, removing the
++ * filesystem tokens used by the legacy implementation.
++ */
++class OAIPMH_Token_Manager {
++
++	const TRANSIENT_PREFIX = 'tnc_oai_token_';
++
++	/**
++	 * Persist a pagination state and return its opaque token.
++	 *
++	 * @param array $data
++	 * @return string
++	 */
++	public function create( array $data ) {
++		$token = wp_generate_password( 40, false, false );
++
++		/**
++		 * Lifetime, in seconds, of a resumptionToken. Defaults to 24 hours.
++		 *
++		 * @param int $seconds
++		 */
++		$ttl = (int) apply_filters( 'tainacan-oai-token-valid', DAY_IN_SECONDS );
++
++		set_transient( self::TRANSIENT_PREFIX . $token, $data, $ttl );
++
++		return $token;
++	}
++
++	/**
++	 * Retrieve the pagination state for a token.
++	 *
++	 * @param string $token
++	 * @return array|false
++	 */
++	public function get( $token ) {
++		if ( ! is_string( $token ) || ! preg_match( '/^[A-Za-z0-9]{1,64}$/', $token ) ) {
++			return false;
++		}
++
++		$data = get_transient( self::TRANSIENT_PREFIX . $token );
++
++		return is_array( $data ) ? $data : false;
++	}
++}
+diff --git a/src/classes/oaipmh/class-tainacan-oaipmh-xml-generator.php b/src/classes/oaipmh/class-tainacan-oaipmh-xml-generator.php
+new file mode 100644
+index 000000000..434c6ef2f
+--- /dev/null
++++ b/src/classes/oaipmh/class-tainacan-oaipmh-xml-generator.php
+@@ -0,0 +1,293 @@
++<?php
++
++namespace Tainacan\OAIPMHExpose;
++
++defined( 'ABSPATH' ) or die( 'No script kiddies please!' );
++
++/**
++ * Builds OAI-PMH 2.0 XML responses with DOMDocument.
++ *
++ * Element text is added through DOMDocument::createTextNode, which escapes
++ * special characters exactly once, so callers pass raw values.
++ */
++class OAIPMH_Xml_Generator {
++
++	const OAI_NS    = 'http://www.openarchives.org/OAI/2.0/';
++	const XSI_NS    = 'http://www.w3.org/2001/XMLSchema-instance';
++	const DC_NS     = 'http://purl.org/dc/elements/1.1/';
++	const OAI_DC_NS = 'http://www.openarchives.org/OAI/2.0/oai_dc/';
++
++	/**
++	 * @var \DOMDocument
++	 */
++	private $dom;
++
++	/**
++	 * @var \DOMElement
++	 */
++	private $root;
++
++	public function __construct() {
++		$this->dom               = new \DOMDocument( '1.0', 'UTF-8' );
++		$this->dom->formatOutput = true;
++	}
++
++	/**
++	 * Create an element holding a single (escaped) text value.
++	 *
++	 * @param string $name
++	 * @param string $value
++	 * @return \DOMElement
++	 */
++	private function text_element( $name, $value ) {
++		$element = $this->dom->createElement( $name );
++		$element->appendChild( $this->dom->createTextNode( (string) ( null === $value ? '' : $value ) ) );
++		return $element;
++	}
++
++	/**
++	 * Initialise the response envelope.
++	 *
++	 * @param string $base_url
++	 * @param string $verb
++	 * @param array  $params
++	 * @return OAIPMH_Xml_Generator
++	 */
++	public function init( $base_url, $verb, $params = array() ) {
++		$this->root = $this->dom->createElementNS( self::OAI_NS, 'OAI-PMH' );
++		$this->root->setAttributeNS(
++			self::XSI_NS,
++			'xsi:schemaLocation',
++			self::OAI_NS . ' http://www.openarchives.org/OAI/2.0/OAI-PMH.xsd'
++		);
++		$this->dom->appendChild( $this->root );
++
++		$this->root->appendChild( $this->text_element( 'responseDate', gmdate( 'Y-m-d\TH:i:s\Z' ) ) );
++
++		$request = $this->text_element( 'request', $base_url );
++		if ( $verb ) {
++			$request->setAttribute( 'verb', $verb );
++		}
++		$allowed = array( 'identifier', 'metadataPrefix', 'from', 'until', 'set', 'resumptionToken' );
++		foreach ( $allowed as $key ) {
++			if ( isset( $params[ $key ] ) && '' !== $params[ $key ] && ! is_array( $params[ $key ] ) ) {
++				$request->setAttribute( $key, (string) $params[ $key ] );
++			}
++		}
++		$this->root->appendChild( $request );
++
++		return $this;
++	}
++
++	/**
++	 * @param string $code
++	 * @param string $message
++	 * @return OAIPMH_Xml_Generator
++	 */
++	public function add_error( $code, $message = '' ) {
++		$error = $this->text_element( 'error', $message );
++		$error->setAttribute( 'code', $code );
++		$this->root->appendChild( $error );
++		return $this;
++	}
++
++	/**
++	 * @param array $data
++	 * @return OAIPMH_Xml_Generator
++	 */
++	public function create_identify( $data ) {
++		$identify = $this->dom->createElement( 'Identify' );
++		$fields   = array(
++			'repositoryName',
++			'baseURL',
++			'protocolVersion',
++			'adminEmail',
++			'earliestDatestamp',
++			'deletedRecord',
++			'granularity',
++		);
++		foreach ( $fields as $field ) {
++			if ( isset( $data[ $field ] ) ) {
++				$identify->appendChild( $this->text_element( $field, $data[ $field ] ) );
++			}
++		}
++		$this->root->appendChild( $identify );
++		return $this;
++	}
++
++	/**
++	 * @return OAIPMH_Xml_Generator
++	 */
++	public function create_metadata_formats() {
++		$list   = $this->dom->createElement( 'ListMetadataFormats' );
++		$format = $this->dom->createElement( 'metadataFormat' );
++		$format->appendChild( $this->text_element( 'metadataPrefix', 'oai_dc' ) );
++		$format->appendChild( $this->text_element( 'schema', 'http://www.openarchives.org/OAI/2.0/oai_dc.xsd' ) );
++		$format->appendChild( $this->text_element( 'metadataNamespace', self::OAI_DC_NS ) );
++		$list->appendChild( $format );
++		$this->root->appendChild( $list );
++		return $this;
++	}
++
++	/**
++	 * @param array $sets
++	 * @return OAIPMH_Xml_Generator
++	 */
++	public function create_sets( $sets ) {
++		if ( empty( $sets ) ) {
++			return $this->add_error( 'noSetHierarchy', 'This repository does not support sets.' );
++		}
++		$list = $this->dom->createElement( 'ListSets' );
++		foreach ( $sets as $set ) {
++			$node = $this->dom->createElement( 'set' );
++			$node->appendChild( $this->text_element( 'setSpec', $set['setSpec'] ) );
++			$node->appendChild( $this->text_element( 'setName', $set['setName'] ) );
++			if ( ! empty( $set['setDescription'] ) ) {
++				$desc = $this->dom->createElement( 'setDescription' );
++				$dc   = $this->build_oai_dc( array( 'description' => $set['setDescription'] ) );
++				$desc->appendChild( $dc );
++				$node->appendChild( $desc );
++			}
++			$list->appendChild( $node );
++		}
++		$this->root->appendChild( $list );
++		return $this;
++	}
++
++	/**
++	 * Start a verb list node (ListRecords/ListIdentifiers/GetRecord).
++	 *
++	 * @param string $type
++	 * @return \DOMElement
++	 */
++	public function start_list( $type ) {
++		$list = $this->dom->createElement( $type );
++		$this->root->appendChild( $list );
++		return $list;
++	}
++
++	/**
++	 * @param \DOMElement $list
++	 * @param array       $data
++	 * @param bool        $include_metadata
++	 * @return OAIPMH_Xml_Generator
++	 */
++	public function add_record( $list, $data, $include_metadata = true ) {
++		$record = $this->dom->createElement( 'record' );
++		$record->appendChild( $this->create_header( $data ) );
++		if ( $include_metadata && 'trash' !== $data['status'] ) {
++			$metadata = $this->dom->createElement( 'metadata' );
++			$metadata->appendChild( $this->build_oai_dc( isset( $data['metadata'] ) ? $data['metadata'] : array() ) );
++			$record->appendChild( $metadata );
++		}
++		$list->appendChild( $record );
++		return $this;
++	}
++
++	/**
++	 * @param \DOMElement $list
++	 * @param array       $data
++	 * @return OAIPMH_Xml_Generator
++	 */
++	public function add_header( $list, $data ) {
++		$list->appendChild( $this->create_header( $data ) );
++		return $this;
++	}
++
++	/**
++	 * @param array $data
++	 * @return \DOMElement
++	 */
++	private function create_header( $data ) {
++		$header = $this->dom->createElement( 'header' );
++		if ( 'trash' === $data['status'] ) {
++			$header->setAttribute( 'status', 'deleted' );
++		}
++		$header->appendChild( $this->text_element( 'identifier', $data['identifier'] ) );
++		$header->appendChild( $this->text_element( 'datestamp', $data['datestamp'] ) );
++		if ( ! empty( $data['setSpec'] ) ) {
++			$header->appendChild( $this->text_element( 'setSpec', $data['setSpec'] ) );
++		}
++		return $header;
++	}
++
++	/**
++	 * Build an <oai_dc:dc> node from a Dublin Core field map.
++	 *
++	 * @param array $dc_data
++	 * @return \DOMElement
++	 */
++	private function build_oai_dc( $dc_data ) {
++		$dc = $this->dom->createElementNS( self::OAI_DC_NS, 'oai_dc:dc' );
++		$dc->setAttributeNS( 'http://www.w3.org/2000/xmlns/', 'xmlns:dc', self::DC_NS );
++		$dc->setAttributeNS( 'http://www.w3.org/2000/xmlns/', 'xmlns:xsi', self::XSI_NS );
++		$dc->setAttributeNS(
++			self::XSI_NS,
++			'xsi:schemaLocation',
++			self::OAI_DC_NS . ' http://www.openarchives.org/OAI/2.0/oai_dc.xsd'
++		);
++
++		$dc_fields = array(
++			'title',
++			'creator',
++			'subject',
++			'description',
++			'publisher',
++			'contributor',
++			'date',
++			'type',
++			'format',
++			'identifier',
++			'source',
++			'language',
++			'relation',
++			'coverage',
++			'rights',
++		);
++
++		foreach ( $dc_fields as $field ) {
++			if ( empty( $dc_data[ $field ] ) ) {
++				continue;
++			}
++			$values = is_array( $dc_data[ $field ] ) ? $dc_data[ $field ] : array( $dc_data[ $field ] );
++			foreach ( $values as $value ) {
++				if ( '' === $value || null === $value ) {
++					continue;
++				}
++				$dc->appendChild( $this->text_element( 'dc:' . $field, $value ) );
++			}
++		}
++
++		return $dc;
++	}
++
++	/**
++	 * @param \DOMElement $list
++	 * @param string      $token
++	 * @param int|null    $total
++	 * @param int|null    $cursor
++	 * @param string|null $expiration
++	 * @return OAIPMH_Xml_Generator
++	 */
++	public function add_resumption_token( $list, $token = '', $total = null, $cursor = null, $expiration = null ) {
++		$rt = $this->text_element( 'resumptionToken', $token );
++		if ( null !== $total ) {
++			$rt->setAttribute( 'completeListSize', (string) $total );
++		}
++		if ( null !== $cursor ) {
++			$rt->setAttribute( 'cursor', (string) $cursor );
++		}
++		if ( null !== $expiration ) {
++			$rt->setAttribute( 'expirationDate', $expiration );
++		}
++		$list->appendChild( $rt );
++		return $this;
++	}
++
++	/**
++	 * @return string
++	 */
++	public function output() {
++		return $this->dom->saveXML();
++	}
++}
+diff --git a/src/classes/oaipmh/class-tainacan-xml-create.php b/src/classes/oaipmh/class-tainacan-xml-create.php
+deleted file mode 100644
+index 31ae37c99..000000000
+--- a/src/classes/oaipmh/class-tainacan-xml-create.php
++++ /dev/null
+@@ -1,117 +0,0 @@
+-<?php
+-
+-namespace Tainacan\OAIPMHExpose;
+-
+-defined( 'ABSPATH' ) or die( 'No script kiddies please!' );
+-
+-/**
+- * A wraper of DOMDocument for data provider
+- */
+-class Xml_Create {
+-    public $doc;
+-
+-    /**
+-     * Constructs an Xml_Create object.
+-     *
+-     * @param $par_array Type: array.
+-     *   Array of request parameters for creating an ANDS_XML object.
+-     * \see create_request.
+-     */
+-    public function __construct($par_array) {
+-        $this->doc = new \DOMDocument("1.0", "UTF-8");
+-        //to have indented output, not just a line
+-        $this->doc->preserveWhiteSpace = false;
+-        $this->doc->formatOutput = true;
+-
+-        // ------------- Interresting part here ------------
+-        //creating an xslt adding processing line
+-        //$xslt = $this->doc->createProcessingInstruction('xml-stylesheet', ' type="text/xsl" href="'. get_template_directory_uri().'/controllers/export/oai2.xsl"');
+-
+-        //var_dump($xslt);
+-        //exit();
+-        //adding it to the xml
+-        //this->doc->appendChild($xslt);
+-
+-
+-        // oai_node equals to $this->doc->documentElement;
+-        $oai_node = $this->doc->createElement("OAI-PMH");
+-        $oai_node->setAttribute("xmlns", "http://www.openarchives.org/OAI/2.0/");
+-        $oai_node->setAttribute("xmlns:xsi", "http://www.w3.org/2001/XMLSchema-instance");
+-        $oai_node->setAttribute("xsi:schemaLocation", "http://www.openarchives.org/OAI/2.0/ http://www.openarchives.org/OAI/2.0/OAI-PMH.xsd");
+-        $this->addChild($oai_node, "responseDate", gmdate("Y-m-d\TH:i:s\Z"));
+-        $this->doc->appendChild($oai_node);
+-        $this->create_request($par_array);
+-    }
+-
+-    /**
+-     * Add a child node to a parent node on a XML Doc: a worker function.
+-     *
+-     * @param $mom_node
+-     *   Type: DOMNode. The target node.
+-     *
+-     * @param $name
+-     *   Type: string. The name of child nade is being added
+-     *
+-     * @param $value
+-     *   Type: string. Text for the adding node if it is a text node.
+-     *
+-     * @return DOMElement $added_node
+-     *   The newly created node, can be used for further expansion.
+-     *   If no further expansion is expected, return value can be igored.
+-     */
+-    public function addChild($mom_node, $name, $value = '') {
+-        $added_node = $this->doc->createElement($name, $value);
+-        $added_node = $mom_node->appendChild($added_node);
+-
+-        return $added_node;
+-    }
+-
+-    /**
+-     * Add a child node to a parent node on a XML Doc: a worker function.
+-     *
+-     * @param $mom_node
+-     *   Type: DOMNode. The target node.
+-     *
+-     * @param $name
+-     *   Type: string. The name of child nade is being added
+-     *
+-     * @param $value
+-     *   Type: string. Text for the adding node if it is a text node.
+-     *
+-     * @return DOMElement $added_node
+-     *   The newly created node, can be used for further expansion.
+-     *   If no further expansion is expected, return value can be igored.
+-     */
+-    function addChildDC($mom_node, $name, $value = '') {
+-        $added_node = $this->doc->createElementNS('http://purl.org/dc/elements/1.1/',$name, $value);
+-        $added_node = $mom_node->appendChild($added_node);
+-
+-        return $added_node;
+-    }
+-
+-    /**
+-     * Create an OAI request node.
+-     *
+-     * @param $par_array Type: array
+-     *   The attributes of a request node. They describe the verb of the request and other associated parameters used in the request.
+-     * Keys of the array define attributes, and values are their content.
+-     */
+-    function create_request($par_array) {
+-        $request = $this->addChild($this->doc->documentElement, "request", TAINACAN_OAI_REPOSITORY_URL);
+-        foreach ($par_array as $key => $value) {
+-            $request->setAttribute($key, $value);
+-        }
+-    }
+-
+-    /**
+-     * Display a doc in a readable, well-formatted way for display or saving
+-     */
+-    function display() {
+-        $pr = new \DOMDocument();
+-        $pr->preserveWhiteSpace = false;
+-        $pr->formatOutput = true;
+-        $pr->loadXML($this->doc->saveXML());
+-        // Raw XML body; esc_xml() would entity-escape markup and break OAI-PMH clients.
+-        echo $pr->saveXML();
+-    }
+-}
+diff --git a/src/classes/oaipmh/class-tainacan-xml-error.php b/src/classes/oaipmh/class-tainacan-xml-error.php
+deleted file mode 100644
+index f5d40edc6..000000000
+--- a/src/classes/oaipmh/class-tainacan-xml-error.php
++++ /dev/null
+@@ -1,26 +0,0 @@
+-<?php
+-
+-namespace Tainacan\OAIPMHExpose;
+-
+-defined( 'ABSPATH' ) or die( 'No script kiddies please!' );
+-
+-/**
+- * Generate an XML response when a request cannot be finished
+- *
+- * It has only one derived member function
+- */
+-class XML_Error extends XML_Create {
+-
+-    public function __construct($par_array, $error_array) {
+-        parent::__construct($par_array);
+-        $oai_node = $this->doc->documentElement;
+-
+-        if($error_array){
+-            foreach ($error_array as $e) {
+-                list($code, $value) = explode("|", $e);
+-                $node = $this->addChild($oai_node, "error", $value);
+-                $node->setAttribute("code", $code);
+-            }
+-        }
+-    }
+-}
+diff --git a/src/classes/oaipmh/class-tainacan-xml-response.php b/src/classes/oaipmh/class-tainacan-xml-response.php
+deleted file mode 100644
+index 3fceecf62..000000000
+--- a/src/classes/oaipmh/class-tainacan-xml-response.php
++++ /dev/null
+@@ -1,103 +0,0 @@
+-<?php
+-
+-namespace Tainacan\OAIPMHExpose;
+-
+-defined( 'ABSPATH' ) or die( 'No script kiddies please!' );
+-
+-/**
+- * Generate an XML response to a request if no error has occured
+- *
+- * This is the class to further develop to suits a publication need
+- */
+-class Xml_Response extends Xml_Create {
+-
+-    public $verbNode;
+-    protected $verb;
+-
+-    public function __construct($par_array) {
+-        parent::__construct($par_array);
+-        $this->verb = $par_array["verb"];
+-        $this->verbNode = $this->addChild($this->doc->documentElement, $this->verb);
+-    }
+-
+-    /** Add direct child nodes to verb node (OAI-PMH), e.g. response to ListMetadataFormats.
+-     * Different verbs can have different required child nodes.
+-     *  \see create_record, create_header
+-     * \see http://www.openarchives.org/OAI/2.0/openarchivesprotocol.htm.
+-     *
+-     * \param $nodeName Type: string. The name of appending node.
+-     * \param $value Type: string. The content of appending node.
+-     */
+-    public function add2_verbNode($nodeName, $value = null) {
+-        return $this->addChild($this->verbNode, $nodeName, $value);
+-    }
+-
+-    /**
+-     * Create an empty \<record\> node. Other nodes will be appended to it later.
+-     */
+-    public function create_record() {
+-        return $this->add2_verbNode("record");
+-    }
+-
+-    /** Headers are enclosed inside of \<record\> to the query of ListRecords, ListIdentifiers and etc.
+-     *
+-     * \param $identifier Type: string. The identifier string for node \<identifier\>.
+-     * \param $timestamp Type: timestamp. Timestapme in UTC format for node \<datastamp\>.
+-     * \param $ands_class Type: mix. Can be an array or just a string. Content of \<setSpec\>.
+-     * \param $add_to_node Type: DOMElement. Default value is null.
+-     * In normal cases, $add_to_node is the \<record\> node created previously. When it is null, the newly created header node is attatched to $this->verbNode.
+-     * Otherwise it will be attatched to the desired node defined in $add_to_node.
+-     */
+-    public function create_header($identifier, $timestamp, $ands_class, $add_to_node = null, $is_deleted = false) {
+-        if (is_null($add_to_node)) {
+-            $header_node = $this->add2_verbNode("header");
+-        } else {
+-            $header_node = $this->addChild($add_to_node, "header");
+-        }
+-
+-        if( $is_deleted ){
+-            $header_node->setAttribute('status', "deleted");
+-        }
+-
+-        $this->addChild($header_node, "identifier", $identifier);
+-        $this->addChild($header_node, "datestamp", $timestamp);
+-        if (is_array($ands_class)) {
+-            foreach ($ands_class as $setspec) {
+-                $this->addChild($header_node, "setSpec", $setspec);
+-            }
+-        } else {
+-            $this->addChild($header_node, "setSpec", $ands_class);
+-        }
+-        return $header_node;
+-    }
+-
+-    /** Create metadata node for holding metadata. This is always added to \<record\> node.
+-     *
+-     * \param $mom_record_node DOMElement. A node acts as the parent node.
+-     *
+-     * @return $meta_node Type: DOMElement.
+-     *   The newly created registryObject node which will be used for further expansion.
+-     *   metadata node itself is maintained by internally by the Class.
+-     */
+-    public function create_metadata($mom_record_node) {
+-        $meta_node = $this->addChild($mom_record_node, "metadata");
+-        return $meta_node;
+-    }
+-
+-
+-    /** If there are too many records request could not finished a resumpToken is generated to let harvester know
+-     *
+-     * \param $token Type: string. A random number created somewhere?
+-     * \param $expirationdatetime Type: string. A string representing time.
+-     * \param $num_rows Type: integer. Number of records retrieved.
+-     * \param $cursor Type: string. Cursor can be used for database to retrieve next time.
+-     */
+-    public  function create_resumpToken($token, $expirationdatetime, $num_rows, $cursor = null) {
+-        $resump_node = $this->addChild($this->verbNode, "resumptionToken", $token);
+-        if (isset($expirationdatetime)) {
+-            $resump_node->setAttribute("expirationDate", $expirationdatetime);
+-        }
+-        $resump_node->setAttribute("completeListSize", $num_rows);
+-        $resump_node->setAttribute("cursor", $cursor);
+-    }
+-}
+\ No newline at end of file
