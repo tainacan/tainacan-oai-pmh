@@ -170,7 +170,7 @@ class Plugin extends \Tainacan\Pages {
 
 		$data = array(
 			'tab'              => $tab,
-			'base_url'         => rest_url( 'tainacan-oai/v1/oai' ),
+			'base_url'         => Endpoint::get_url(),
 			'cache_stats'      => $this->cache->get_stats(),
 			'index_health'     => $this->cache->get_health(),
 			'collection_stats' => $this->cache->get_collection_stats(),
@@ -323,7 +323,7 @@ class Plugin extends \Tainacan\Pages {
 	public function ajax_test_endpoint() {
 		$this->authorize_ajax();
 
-		$endpoint  = rest_url( 'tainacan-oai/v1/oai' ) . '?verb=Identify';
+		$endpoint  = Endpoint::get_url() . '?verb=Identify';
 		$sslverify = ! $this->is_self_local_url( $endpoint );
 
 		$start    = microtime( true );

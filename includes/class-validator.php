@@ -11,7 +11,7 @@ class Validator {
 	private $results;
 
 	public function __construct() {
-		$this->base_url = rest_url( 'tainacan-oai/v1/oai' );
+		$this->base_url = Endpoint::get_url();
 	}
 
 	public function run() {

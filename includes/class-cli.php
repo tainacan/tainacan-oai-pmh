@@ -113,7 +113,7 @@ class CLI {
 	 * @when after_wp_load
 	 */
 	public function info( $args, $assoc_args ) {
-		\WP_CLI::log( 'Endpoint: ' . rest_url( 'tainacan-oai/v1/oai' ) );
+		\WP_CLI::log( 'Endpoint: ' . Endpoint::get_url() );
 		\WP_CLI::log( 'Repository: ' . Settings::get( 'repository_name', get_bloginfo( 'name' ) ) );
 		\WP_CLI::log( 'Max Records: ' . Settings::get( 'max_records', 100 ) );
 		\WP_CLI::log( 'Cache: ' . ( Settings::get( 'cache_enabled', true ) ? 'Enabled' : 'Disabled' ) );

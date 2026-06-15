@@ -48,6 +48,7 @@ add_action(
 		// OAI_Client, Imports_Table, Item_Resolver) must come before the
 		// Importer facade that wires them together.
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-activator.php';
+		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-endpoint.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-settings.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-cache.php';
 		require_once TAINACAN_OAI_PMH_DIR . 'includes/class-logger.php';

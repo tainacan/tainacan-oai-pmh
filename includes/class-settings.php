@@ -251,7 +251,7 @@ class Settings {
 	 * Section description callback
 	 */
 	public static function section_description() {
-		$endpoint = rest_url( 'tainacan-oai/v1/oai' );
+		$endpoint = Endpoint::get_url();
 		echo '<p class="settings-section-description">';
 		echo '<strong>' . esc_html__( 'Your OAI-PMH Endpoint:', 'tainacan-oai-pmh' ) . '</strong> ';
 		echo '<code>' . esc_html( $endpoint ) . '</code>';
