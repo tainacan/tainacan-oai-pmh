@@ -11,11 +11,11 @@ use Tainacan_OAI_PMH\Endpoint;
 class Endpoint_Test extends WP_UnitTestCase {
 
 	public function test_prefers_core_data_provider_when_available(): void {
-		if ( ! class_exists( '\Tainacan\OAIPMHExpose\OAIPMH_Data_Provider' ) ) {
+		if ( ! class_exists( '\Tainacan\OAIPMH\OAIPMH_Data_Provider' ) ) {
 			$this->markTestSkipped( 'Tainacan core OAI-PMH provider is not available in this environment.' );
 		}
 
-		$provider = new \Tainacan\OAIPMHExpose\OAIPMH_Data_Provider();
+		$provider = new \Tainacan\OAIPMH\OAIPMH_Data_Provider();
 
 		$this->assertSame( $provider->get_base_url(), Endpoint::get_url() );
 		$this->assertStringContainsString( 'tainacan/v2/oai', Endpoint::get_url() );

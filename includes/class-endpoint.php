@@ -42,11 +42,11 @@ class Endpoint {
 	 * @return string|null Core endpoint URL when OAI-PMH is provided by Tainacan.
 	 */
 	private static function get_core_url() {
-		if ( class_exists( '\Tainacan\OAIPMHExpose\OAIPMH_Data_Provider' ) ) {
-			return ( new \Tainacan\OAIPMHExpose\OAIPMH_Data_Provider() )->get_base_url();
+		if ( class_exists( '\Tainacan\OAIPMH\OAIPMH_Data_Provider' ) ) {
+			return ( new \Tainacan\OAIPMH\OAIPMH_Data_Provider() )->get_base_url();
 		}
 
-		if ( class_exists( '\Tainacan\API\EndPoints\REST_Oaipmh_Expose_Controller' ) ) {
+		if ( class_exists( '\Tainacan\API\EndPoints\REST_Oaipmh_Controller' ) ) {
 			return rest_url( self::CORE_ROUTE );
 		}
 
